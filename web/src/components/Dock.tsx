@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore, APP_CATEGORIES } from '@/stores/useAppStore';
 import { useWindowStore } from '@/stores/useWindowStore';
+import { useIsMobile } from '@/hooks/use-mobile';
 import type { AppDefinition } from '@/stores/useAppStore';
 import {
   FolderOpen,
@@ -72,6 +73,7 @@ const LUCIDE_ICONS: Record<string, React.ComponentType<{ size?: number; strokeWi
 };
 
 export function Dock() {
+  const isMobile = useIsMobile();
   const dockApps = useAppStore((s) => s.dockApps);
   const pinToDock = useAppStore((s) => s.pinToDock);
   const unpinFromDock = useAppStore((s) => s.unpinFromDock);
@@ -206,14 +208,14 @@ export function Dock() {
   return (
     <>
       <div
-        className="fixed bottom-0 left-1/2 -translate-x-1/2 glass flex items-center gap-2 px-4"
+        className={`fixed bottom-0 left-1/2 -translate-x-1/2 glass flex items-center gap-2 px-4 ${isMobile ? 'overflow-x-auto' : ''}`}
         style={{
-          height: '64px',
-          borderRadius: '16px 16px 0 0',
+          height: isMobile ? '56px' : '64px',
+          borderRadius: isMobile ? '12px 12px 0 0' : '16px 16px 0 0',
           borderTop: '1px solid var(--glass-border)',
           boxShadow: '0 -4px 20px rgba(26,26,26,0.06)',
           zIndex: 2000,
-          maxWidth: '90vw',
+          maxWidth: isMobile ? '100vw' : '90vw',
         }}
       >
         {/* Pinned apps */}

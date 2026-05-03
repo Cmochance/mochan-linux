@@ -3,12 +3,17 @@ import { motion } from 'framer-motion';
 import type { WindowData } from '@/stores/useWindowStore';
 import { useWindowStore } from '@/stores/useWindowStore';
 import { useAppStore } from '@/stores/useAppStore';
+import { useIsMobile } from '@/hooks/use-mobile';
 import {
   X,
   Minus,
   Maximize2,
   Minimize2,
 } from 'lucide-react';
+
+// Heights of the persistent chrome on mobile (StatusBar at top, Dock at bottom).
+const MOBILE_STATUSBAR_PX = 28;
+const MOBILE_DOCK_PX = 56;
 
 interface WindowFrameProps {
   window: WindowData;
@@ -43,6 +48,7 @@ export function WindowFrame({ window: win, children }: WindowFrameProps) {
   const getAppById = useAppStore((s) => s.getAppById);
   const app = getAppById(win.appId);
 
+  const isMobile = useIsMobile();
   const frameRef = useRef<HTMLDivElement>(null);
   const dragState = useRef<{ startX: number; startY: number; initialX: number; initialY: number } | null>(null);
   const resizeState = useRef<{ direction: ResizeDirection; startX: number; startY: number; initialW: number; initialH: number; initialX: number; initialY: number } | null>(null);
@@ -53,6 +59,7 @@ export function WindowFrame({ window: win, children }: WindowFrameProps) {
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
+      if (isMobile) return;
       if ((e.target as HTMLElement).closest('[data-no-drag]')) return;
       e.preventDefault();
       focusWindow(win.id);
@@ -67,7 +74,7 @@ export function WindowFrame({ window: win, children }: WindowFrameProps) {
       };
       setIsDragging(true);
     },
-    [win.id, win.x, win.y, win.isMaximized, focusWindow]
+    [isMobile, win.id, win.x, win.y, win.isMaximized, focusWindow]
   );
 
   const handleResizeStart = useCallback(
@@ -162,17 +169,29 @@ export function WindowFrame({ window: win, children }: WindowFrameProps) {
 
   const isActive = win.isActive;
 
+  // On mobile, the window is forced to fill the area between the StatusBar
+  // and the Dock; drag / resize / non-fullscreen positioning are disabled.
+  const mobileLayout = isMobile
+    ? {
+        left: 0,
+        top: MOBILE_STATUSBAR_PX,
+        width: '100vw' as const,
+        height: `calc(100vh - ${MOBILE_STATUSBAR_PX + MOBILE_DOCK_PX}px)` as const,
+        borderRadius: 0,
+      }
+    : null;
+
   return (
     <motion.div
       ref={frameRef}
       className="absolute flex flex-col will-change-transform"
       style={{
-        left: win.x,
-        top: win.y,
-        width: win.width,
-        height: win.height,
+        left: mobileLayout ? mobileLayout.left : win.x,
+        top: mobileLayout ? mobileLayout.top : win.y,
+        width: mobileLayout ? mobileLayout.width : win.width,
+        height: mobileLayout ? mobileLayout.height : win.height,
         zIndex: win.zIndex,
-        borderRadius: '8px',
+        borderRadius: mobileLayout ? mobileLayout.borderRadius : '8px',
         overflow: 'hidden',
         scale: isDragging ? 1.005 : 1,
       }}
@@ -237,8 +256,8 @@ export function WindowFrame({ window: win, children }: WindowFrameProps) {
             <button
               className="relative flex items-center justify-center rounded-full transition-colors"
               style={{
-                width: '12px',
-                height: '12px',
+                width: isMobile ? '22px' : '12px',
+                height: isMobile ? '22px' : '12px',
                 backgroundColor: hoveredButton === 'min' ? '#b8a01a' : 'var(--ink-300)',
                 cursor: 'pointer',
               }}
@@ -256,8 +275,8 @@ export function WindowFrame({ window: win, children }: WindowFrameProps) {
             <button
               className="relative flex items-center justify-center rounded-full transition-colors"
               style={{
-                width: '12px',
-                height: '12px',
+                width: isMobile ? '22px' : '12px',
+                height: isMobile ? '22px' : '12px',
                 backgroundColor: hoveredButton === 'max' ? '#4a7c59' : 'var(--ink-300)',
                 cursor: 'pointer',
               }}
@@ -280,8 +299,8 @@ export function WindowFrame({ window: win, children }: WindowFrameProps) {
             <button
               className="relative flex items-center justify-center rounded-full transition-colors"
               style={{
-                width: '12px',
-                height: '12px',
+                width: isMobile ? '22px' : '12px',
+                height: isMobile ? '22px' : '12px',
                 backgroundColor: hoveredButton === 'close' ? 'var(--cinnabar-light)' : 'var(--cinnabar)',
                 cursor: 'pointer',
               }}
@@ -311,7 +330,7 @@ export function WindowFrame({ window: win, children }: WindowFrameProps) {
       </div>
 
       {/* Resize handles */}
-      {!win.isMaximized && !win.isMinimized && (
+      {!win.isMaximized && !win.isMinimized && !isMobile && (
         <>
           {RESIZE_HANDLES.map(({ direction, className, cursor }) => (
             <div

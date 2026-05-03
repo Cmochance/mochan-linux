@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-05-04
+
+Phase 6 — mobile / touch usability.
+
+### Added
+
+- `WindowFrame` mobile mode: when the viewport is below 768 px wide,
+  every window is forced to fill the area between StatusBar (top, 28 px)
+  and Dock (bottom, 56 px). Drag and resize are disabled, resize handles
+  are not rendered. The 12 px traffic-light buttons grow to 22 px so they
+  are reachable as touch targets.
+- `Dock` mobile mode: the bar shrinks to 56 px tall, takes full viewport
+  width, and scrolls horizontally when the icon list overflows. Desktop
+  behaviour (centered, max-width 90vw) is unchanged.
+
+### Notes
+
+- Tested by squeezing Chrome's responsive viewport to 390 × 844 (iPhone
+  14). Login screen, terminal, file manager, audit log, and system
+  monitor all reachable on a phone-sized viewport. xterm.js handles touch
+  selection out of the box; on-screen keyboards trigger `term.focus()`
+  via tap.
+- This is a viability pass, not a polished mobile UX. `Desktop` still
+  renders icons designed for mouse drag-and-drop, and the `AppLauncher`
+  category grid was tuned for laptop widths. Both are usable but
+  cramped — proper mobile UX is later.
+
 ## [0.6.0] — 2026-05-04
 
 Phase 5 — inter-app routing. Double-clicking a file in FileManager now
