@@ -3,6 +3,8 @@ import {
   ZoomIn, ZoomOut, RotateCcw, RotateCw, FlipHorizontal, FlipVertical,
   Upload, Download, Trash2, Play, Pause, ChevronLeft, ChevronRight, Image
 } from 'lucide-react';
+import { fsClient } from '@/lib/fs';
+import { usePayloadPath, basename } from '@/lib/openFile';
 
 interface ImageFile {
   id: string;
@@ -25,9 +27,66 @@ function generateId() {
   return Math.random().toString(36).substring(2, 9);
 }
 
-export default function ImageViewer() {
+export default function ImageViewer({ windowId }: { windowId?: string }) {
+  const remotePath = usePayloadPath(windowId);
   const [images, setImages] = useState<ImageFile[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+
+  // FileManager double-click → preload the remote image as the first entry.
+  useEffect(() => {
+    if (!remotePath) return;
+    let alive = true;
+    const url = fsClient.downloadURL(remotePath);
+    const probe = new window.Image();
+    probe.onload = () => {
+      if (!alive) return;
+      const id = generateId();
+      const name = basename(remotePath);
+      const ext = (name.split('.').pop() || '').toLowerCase();
+      const mime =
+        ext === 'png' ? 'image/png' :
+        ext === 'gif' ? 'image/gif' :
+        ext === 'webp' ? 'image/webp' :
+        ext === 'svg' ? 'image/svg+xml' :
+        ext === 'bmp' ? 'image/bmp' :
+        ext === 'avif' ? 'image/avif' :
+        ext === 'ico' ? 'image/x-icon' :
+        'image/jpeg';
+      const synthetic = new File([new Blob([], { type: mime })], name, { type: mime });
+      const entry: ImageFile = {
+        id,
+        file: synthetic,
+        url,
+        name,
+        width: probe.naturalWidth,
+        height: probe.naturalHeight,
+        size: 0,
+        type: mime,
+      };
+      setImages([entry]);
+      setCurrentIndex(0);
+    };
+    probe.onerror = () => {
+      if (!alive) return;
+      // Fall back to inserting a placeholder so the user sees the failure
+      // state instead of the empty drop-zone.
+      const synthetic = new File([new Blob([])], basename(remotePath));
+      setImages([{
+        id: generateId(),
+        file: synthetic,
+        url,
+        name: basename(remotePath),
+        width: 0,
+        height: 0,
+        size: 0,
+        type: 'application/octet-stream',
+      }]);
+    };
+    probe.src = url;
+    return () => {
+      alive = false;
+    };
+  }, [remotePath]);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [flipH, setFlipH] = useState(false);

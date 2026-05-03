@@ -4,6 +4,8 @@ import {
   ListOrdered, FileText, FolderOpen, Save, Download, Hash
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { fsClient } from '@/lib/fs';
+import { usePayloadPath } from '@/lib/openFile';
 
 const STORAGE_KEY = 'markdowneditor-content';
 
@@ -75,13 +77,54 @@ const toolbarButtons = [
   { icon: ListOrdered, label: '有序列表 (Ordered)', prefix: '1. ', suffix: '' },
 ];
 
-export default function MarkdownEditor() {
+export default function MarkdownEditor({ windowId }: { windowId?: string }) {
+  const remotePath = usePayloadPath(windowId);
+  const [remoteSavePath, setRemoteSavePath] = useState<string | null>(null);
+  const [remoteStatus, setRemoteStatus] = useState<'idle' | 'loading' | 'saving' | 'error'>('idle');
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+
   const [content, setContent] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY) || DEFAULT_CONTENT; } catch { return DEFAULT_CONTENT; }
   });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // FileManager double-click → load via /api/fs.
+  useEffect(() => {
+    if (!remotePath) return;
+    let alive = true;
+    setRemoteStatus('loading');
+    setRemoteSavePath(remotePath);
+    void fsClient
+      .read(remotePath)
+      .then((r) => {
+        if (!alive) return;
+        setContent(r.content);
+        setRemoteStatus('idle');
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setRemoteStatus('error');
+        setRemoteError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [remotePath]);
+
+  const saveRemote = useCallback(async () => {
+    if (!remoteSavePath) return;
+    setRemoteStatus('saving');
+    try {
+      await fsClient.write(remoteSavePath, content);
+      setRemoteStatus('idle');
+      setRemoteError(null);
+    } catch (err) {
+      setRemoteStatus('error');
+      setRemoteError(err instanceof Error ? err.message : String(err));
+    }
+  }, [remoteSavePath, content]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, content); } catch { /* noop */ }
@@ -132,6 +175,10 @@ export default function MarkdownEditor() {
   };
 
   const handleSave = () => {
+    if (remoteSavePath) {
+      void saveRemote();
+      return;
+    }
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

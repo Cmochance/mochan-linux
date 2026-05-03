@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-05-04
+
+Phase 5 — inter-app routing. Double-clicking a file in FileManager now
+opens the right app instead of always falling back to the CodeMirror
+modal. Apps load their content directly from `/api/fs`.
+
+### Added
+
+- `lib/openFile.ts`: extension-driven router. Maps:
+  - `.md` / `.markdown` → MarkdownEditor
+  - `.jpg` / `.jpeg` / `.png` / `.gif` / `.webp` / `.svg` / `.bmp` /
+    `.ico` / `.avif` → ImageViewer
+  - `.txt` / `.log` / `.conf` / `.cfg` / `.ini` / `.env` and common
+    source-code extensions (`.go` / `.py` / `.rs` / `.js` / `.ts` /
+    `.json` / …) → TextEditor
+  - everything else falls back to the existing FileManager CodeMirror
+    modal (text) or download (binary).
+- `useWindowStore.WindowData.payload`: optional bag passed at open time
+  so apps can read the file path that triggered the launch.
+  `usePayloadPath(windowId)` is the helper.
+- TextEditor / MarkdownEditor / ImageViewer now opt in: when launched
+  with a payload, they fetch via `/api/fs/read` (or `downloadURL` for
+  images) and override their default content. Save buttons in
+  TextEditor and MarkdownEditor, when there is a remote path, write
+  back via `/api/fs/write` instead of triggering a browser download.
+
+### Notes
+
+- Apps launched without a payload (from the start menu / Dock) keep
+  their original behaviour unchanged. The remote-fs path is purely
+  additive.
+- ImageViewer gets a single-image preview when opened from FileManager;
+  drag-and-drop and the existing local-file mode still work.
+
 ## [0.5.0] — 2026-05-04
 
 Phase 4 — security audit log.

@@ -32,6 +32,7 @@ import {
 } from '@/lib/fs';
 import { ApiError } from '@/lib/api';
 import { CodeEditor } from '@/components/CodeEditor';
+import { openFileInApp } from '@/lib/openFile';
 
 const SHORTCUTS: { label: string; path: string }[] = [
   { label: '主目录', path: '~' },
@@ -109,6 +110,11 @@ export default function FileManager() {
   async function openEntry(e: FsEntry) {
     if (e.is_dir) {
       await load(e.path);
+      return;
+    }
+    // Route to a dedicated app if the extension is known
+    // (markdown / image / text editor for source code).
+    if (openFileInApp(e.path)) {
       return;
     }
     if (e.size > 8 * 1024 * 1024) {

@@ -16,6 +16,9 @@ export interface WindowData {
   prevY?: number;
   prevWidth?: number;
   prevHeight?: number;
+  // Optional payload passed at open time (e.g. file path from FileManager).
+  // Apps opt in by looking themselves up via getWindowById(windowId).payload.
+  payload?: Record<string, unknown>;
 }
 
 interface WindowState {

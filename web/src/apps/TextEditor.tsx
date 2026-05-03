@@ -3,6 +3,8 @@ import {
   FileText, FolderOpen, Save, Search, RotateCcw, RotateCw,
   Type, Hash, Settings, X, ChevronDown, ChevronUp, Replace
 } from 'lucide-react';
+import { fsClient } from '@/lib/fs';
+import { usePayloadPath } from '@/lib/openFile';
 
 const STORAGE_KEY = 'texteditor-content';
 
@@ -17,10 +19,53 @@ const CODE_KEYWORDS = [
   'nonlocal', 'assert', 'raise', 'from', 'elif', 'yield', 'True', 'False'
 ];
 
-export default function TextEditor() {
+export default function TextEditor({ windowId }: { windowId?: string }) {
+  const remotePath = usePayloadPath(windowId);
+  const [remoteSavePath, setRemoteSavePath] = useState<string | null>(null);
+  const [remoteStatus, setRemoteStatus] = useState<'idle' | 'loading' | 'saving' | 'error'>('idle');
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+
   const [text, setText] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY) || ''; } catch { return ''; }
   });
+
+  // If launched from FileManager, override local-storage state and load
+  // the file from /api/fs.
+  useEffect(() => {
+    if (!remotePath) return;
+    let alive = true;
+    setRemoteStatus('loading');
+    setRemoteSavePath(remotePath);
+    void fsClient
+      .read(remotePath)
+      .then((r) => {
+        if (!alive) return;
+        setText(r.content);
+        setRemoteStatus('idle');
+        setRemoteError(null);
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setRemoteStatus('error');
+        setRemoteError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [remotePath]);
+
+  const saveRemote = useCallback(async () => {
+    if (!remoteSavePath) return;
+    setRemoteStatus('saving');
+    try {
+      await fsClient.write(remoteSavePath, text);
+      setRemoteStatus('idle');
+      setRemoteError(null);
+    } catch (err) {
+      setRemoteStatus('error');
+      setRemoteError(err instanceof Error ? err.message : String(err));
+    }
+  }, [remoteSavePath, text]);
   const [showFind, setShowFind] = useState(false);
   const [showReplace, setShowReplace] = useState(false);
   const [findText, setFindText] = useState('');
@@ -119,6 +164,10 @@ export default function TextEditor() {
   };
 
   const handleSave = () => {
+    if (remoteSavePath) {
+      void saveRemote();
+      return;
+    }
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
