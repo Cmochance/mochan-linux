@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -66,11 +66,43 @@ jobs:
           sha256sum "mochan-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" > \
             "mochan-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256"
 
-      - name: Upload artifacts to GitHub Release
+      - name: Upload binary artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             bin/mochan-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
             bin/mochan-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256
           generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Stage per-arch sha256 for aggregator
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha256-${{ matrix.goarch }}
+          path: bin/mochan-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256
+          retention-days: 1
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Collect per-arch sha256 files
+        uses: actions/download-artifact@v4
+        with:
+          path: sha
+          pattern: sha256-*
+          merge-multiple: true
+
+      - name: Build SHA256SUMS
+        run: |
+          cd sha
+          # cat in deterministic order so the file content is stable across reruns
+          ls -1 *.tar.gz.sha256 | sort | xargs cat > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Upload SHA256SUMS to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sha/SHA256SUMS
           fail_on_unmatched_files: true
