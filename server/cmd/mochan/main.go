@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
 
+	"github.com/alysechen/mochan-linux/server/internal/audit"
 	"github.com/alysechen/mochan-linux/server/internal/auth"
 	"github.com/alysechen/mochan-linux/server/internal/config"
 	"github.com/alysechen/mochan-linux/server/internal/fsapi"
@@ -114,6 +116,16 @@ func runServer() error {
 
 	authn := auth.New(cfg.Username, cfg.PasswordHash, cfg.JWTSecret, cfg.TokenTTL)
 
+	auditLog, err := audit.New(filepath.Join(cfg.DataDir, "audit.log"))
+	if err != nil {
+		log.Printf("audit log init failed (continuing without audit): %v", err)
+	}
+	defer func() {
+		if auditLog != nil {
+			_ = auditLog.Close()
+		}
+	}()
+
 	staticFS, err := static.FS()
 	if err != nil {
 		return err
@@ -130,14 +142,17 @@ func runServer() error {
 	})
 
 	r.Route("/api", func(api chi.Router) {
-		api.Post("/auth/login", loginHandler(authn, cfg))
-		api.Post("/auth/logout", logoutHandler)
+		api.Post("/auth/login", loginHandler(authn, cfg, auditLog))
+		api.Post("/auth/logout", logoutHandler(auditLog, authn))
 
 		api.Group(func(p chi.Router) {
 			p.Use(authn.Middleware)
 			p.Get("/me", meHandler)
-			p.Route("/fs", fsapi.New().Mount)
-			p.Route("/sys", sysinfo.New().Mount)
+			p.Route("/fs", fsapi.New(auditLog).Mount)
+			p.Route("/sys", func(sr chi.Router) {
+				sysinfo.New(auditLog).Mount(sr)
+				sr.Route("/audit", audit.NewHandler(auditLog).Mount)
+			})
 		})
 	})
 
@@ -171,7 +186,7 @@ func runServer() error {
 	return nil
 }
 
-func loginHandler(a *auth.Authenticator, cfg *config.Config) http.HandlerFunc {
+func loginHandler(a *auth.Authenticator, cfg *config.Config, al *audit.Logger) http.HandlerFunc {
 	type req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -190,6 +205,14 @@ func loginHandler(a *auth.Authenticator, cfg *config.Config) http.HandlerFunc {
 		if err := a.Verify(body.Username, body.Password); err != nil {
 			// Constant-ish delay to slow down brute force.
 			time.Sleep(500 * time.Millisecond)
+			if al != nil {
+				al.Log(r.Context(), audit.Event{
+					Type:    "auth.login.fail",
+					Actor:   body.Username,
+					IP:      audit.ClientIP(r),
+					Outcome: "deny",
+				})
+			}
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
@@ -207,22 +230,46 @@ func loginHandler(a *auth.Authenticator, cfg *config.Config) http.HandlerFunc {
 			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
 		})
+		if al != nil {
+			al.Log(r.Context(), audit.Event{
+				Type:    "auth.login.success",
+				Actor:   body.Username,
+				IP:      audit.ClientIP(r),
+				Outcome: "ok",
+			})
+		}
 		writeJSON(w, http.StatusOK, resp{Token: token, ExpiresAt: exp, Username: body.Username})
 		_ = cfg
 	}
 }
 
-func logoutHandler(w http.ResponseWriter, _ *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "mochan_token",
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-	})
-	w.WriteHeader(http.StatusNoContent)
+func logoutHandler(al *audit.Logger, a *auth.Authenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor := ""
+		if c, err := r.Cookie("mochan_token"); err == nil && c.Value != "" {
+			if claims, perr := a.Parse(c.Value); perr == nil {
+				actor = claims.Subject
+			}
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     "mochan_token",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteLaxMode,
+		})
+		if al != nil {
+			al.Log(r.Context(), audit.Event{
+				Type:    "auth.logout",
+				Actor:   actor,
+				IP:      audit.ClientIP(r),
+				Outcome: "ok",
+			})
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func meHandler(w http.ResponseWriter, r *http.Request) {

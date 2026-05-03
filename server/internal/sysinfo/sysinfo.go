@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/alysechen/mochan-linux/server/internal/audit"
+	"github.com/alysechen/mochan-linux/server/internal/auth"
+
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
@@ -22,9 +26,11 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-type Handler struct{}
+type Handler struct {
+	audit *audit.Logger
+}
 
-func New() *Handler { return &Handler{} }
+func New(a *audit.Logger) *Handler { return &Handler{audit: a} }
 
 func (h *Handler) Mount(r chi.Router) {
 	r.Get("/stat", h.stat)
@@ -232,6 +238,19 @@ func (h *Handler) kill(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if h.audit != nil {
+		actor := ""
+		if c, ok := auth.ClaimsFrom(r.Context()); ok {
+			actor = c.Subject
+		}
+		h.audit.Log(r.Context(), audit.Event{
+			Type:    "sys.kill",
+			Actor:   actor,
+			IP:      audit.ClientIP(r),
+			Detail:  map[string]any{"pid": body.PID, "signal": sig.String()},
+			Outcome: "ok",
+		})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -42,6 +42,7 @@ export const APPS: AppDefinition[] = [
   { id: 'notes', name: '便签', nameEn: 'Notes', icon: 'StickyNote', category: 'system', description: '桌面便签' },
   { id: 'trash', name: '废纸篓', nameEn: 'Trash', icon: 'Trash2', category: 'system', description: '已删除文件' },
   { id: 'taskmanager', name: '任务管理器', nameEn: 'Task Manager', icon: 'ListTodo', category: 'system', description: '进程管理和监控' },
+  { id: 'auditlog', name: '审计日志', nameEn: 'Audit Log', icon: 'ScrollText', category: 'system', description: '登录和敏感操作审计' },
   { id: 'weather', name: '天气', nameEn: 'Weather', icon: 'CloudSun', category: 'system', description: '天气预报' },
 
   // Office (8)

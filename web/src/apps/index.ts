@@ -12,6 +12,7 @@ export const Screenshot = lazy(() => import('./Screenshot'));
 export const Notes = lazy(() => import('./Notes'));
 export const Trash = lazy(() => import('./Trash'));
 export const TaskManager = lazy(() => import('./TaskManager'));
+export const AuditLog = lazy(() => import('./AuditLog'));
 export const Weather = lazy(() => import('./Weather'));
 
 // Office
@@ -84,6 +85,7 @@ export const lazyAppComponents: Record<string, React.LazyExoticComponent<React.C
   notes: Notes,
   trash: Trash,
   taskmanager: TaskManager,
+  auditlog: AuditLog,
   weather: Weather,
   texteditor: TextEditor,
   markdowneditor: MarkdownEditor,

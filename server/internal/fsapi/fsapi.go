@@ -23,6 +23,9 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/alysechen/mochan-linux/server/internal/audit"
+	"github.com/alysechen/mochan-linux/server/internal/auth"
 )
 
 const (
@@ -31,9 +34,31 @@ const (
 	maxUploadBytes = 256 << 20
 )
 
-type Handler struct{}
+type Handler struct {
+	audit *audit.Logger
+}
 
-func New() *Handler { return &Handler{} }
+func New(a *audit.Logger) *Handler { return &Handler{audit: a} }
+
+func (h *Handler) actor(r *http.Request) string {
+	if c, ok := auth.ClaimsFrom(r.Context()); ok {
+		return c.Subject
+	}
+	return ""
+}
+
+func (h *Handler) auditEvent(r *http.Request, eventType string, detail map[string]any) {
+	if h.audit == nil {
+		return
+	}
+	h.audit.Log(r.Context(), audit.Event{
+		Type:    eventType,
+		Actor:   h.actor(r),
+		IP:      audit.ClientIP(r),
+		Detail:  detail,
+		Outcome: "ok",
+	})
+}
 
 func (h *Handler) Mount(r chi.Router) {
 	r.Get("/list", h.list)
@@ -232,6 +257,7 @@ func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	h.auditEvent(r, "fs.write", map[string]any{"path": abs, "size": info.Size()})
 	writeJSON(w, http.StatusOK, toEntry(info.Name(), abs, info))
 }
 
@@ -262,6 +288,7 @@ func (h *Handler) mkdir(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	h.auditEvent(r, "fs.mkdir", map[string]any{"path": abs, "parents": body.Parents})
 	writeJSON(w, http.StatusOK, toEntry(info.Name(), abs, info))
 }
 
@@ -281,6 +308,7 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	h.auditEvent(r, "fs.delete", map[string]any{"path": abs, "recursive": recursive})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -312,6 +340,7 @@ func (h *Handler) move(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	h.auditEvent(r, "fs.move", map[string]any{"from": from, "to": to})
 	writeJSON(w, http.StatusOK, toEntry(info.Name(), to, info))
 }
 
@@ -364,6 +393,11 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 			saved = append(saved, toEntry(info.Name(), dest, info))
 		}
 	}
+	uploadedNames := make([]map[string]any, 0, len(saved))
+	for _, e := range saved {
+		uploadedNames = append(uploadedNames, map[string]any{"name": e.Name, "size": e.Size})
+	}
+	h.auditEvent(r, "fs.upload", map[string]any{"dir": abs, "files": uploadedNames})
 	writeJSON(w, http.StatusOK, map[string]any{"saved": saved})
 }
 

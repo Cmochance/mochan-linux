@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-05-04
+
+Phase 4 — security audit log.
+
+### Added
+
+- `internal/audit` package: append-only JSONL writer at
+  `<DataDir>/audit.log` (default `/var/lib/mochan/audit.log`), 0640 perms,
+  rotates to `.1` at 10 MiB. Nil-safe so audit-write failures never break
+  the underlying operation.
+- Audit events now captured: `auth.login.success`, `auth.login.fail`,
+  `auth.logout`, `fs.write`, `fs.mkdir`, `fs.delete`, `fs.move`,
+  `fs.upload`, `sys.kill`. Each row carries `time`, `actor`, `ip`,
+  `outcome` (`ok` / `deny`), and event-specific `detail`.
+- `GET /api/sys/audit` tail endpoint with `?limit=` and `?type=` filters.
+  Returns newest-first, transparently merges current file + last
+  rotation.
+- `apps/AuditLog.tsx`: live audit viewer, type-filtered dropdown,
+  5 s auto-refresh, login-success / login-fail counters in the toolbar.
+  Registered in the system-tools category as "审计日志".
+- Real client IP attribution: prefers `CF-Connecting-IP` →
+  `X-Real-IP` → first hop of `X-Forwarded-For` → `RemoteAddr`. Verified
+  on the `linux.mochance.xyz` deployment (Cloudflare → NPM → mochan).
+
+### Removed
+
+- `Co-Authored-By: Claude` trailer rewritten out of the v0.1.0 → v0.4.0
+  history. Repository contributor graph now correctly shows Cmochance
+  alone.
+
 ## [0.4.0] — 2026-05-04
 
 Phase 3 — system observability + editor upgrade + release pipeline.
