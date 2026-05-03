@@ -1,0 +1,303 @@
+@import url('https://fonts.googleapis.com/css2?family=ZCOOL+XiaoWei&family=Noto+Serif+SC:wght@400;600;700&family=Noto+Sans+SC:wght@300;400;500;600;700&family=Ma+Shan+Zheng&family=Playfair+Display:wght@400;600&family=Inter:wght@300;400;500;600&family=Maple+Mono+CN:wght@400;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Ink Palette */
+    --ink-50: #f0ebe4;
+    --ink-100: #e8e4df;
+    --ink-200: #d9d9d9;
+    --ink-300: #bdbdbd;
+    --ink-400: #9e9e9e;
+    --ink-500: #7a7a7a;
+    --ink-600: #5c5c5c;
+    --ink-700: #3d3d3d;
+    --ink-800: #2d2d2d;
+    --ink-900: #1a1a1a;
+
+    /* Accent */
+    --cinnabar: #b3392f;
+    --cinnabar-light: #c94a3f;
+    --cinnabar-dark: #8a2a22;
+    --seal-red: #a62e26;
+
+    /* Wash tones */
+    --wash-deep: rgba(26, 26, 26, 0.18);
+    --wash-medium: rgba(45, 45, 45, 0.10);
+    --wash-light: rgba(26, 26, 26, 0.05);
+    --wash-faint: rgba(45, 45, 45, 0.03);
+
+    /* Semantic */
+    --success: #4a7c59;
+    --warning: #b8860b;
+    --error: #b3392f;
+    --info: #5a7a8a;
+
+    /* Glass */
+    --glass-bg: rgba(240, 235, 228, 0.75);
+    --glass-border: rgba(158, 158, 158, 0.25);
+    --glass-active: rgba(240, 235, 228, 0.92);
+    --backdrop-blur: blur(20px) saturate(180%);
+
+    /* Shadows */
+    --shadow-sm: 0 1px 3px rgba(26,26,26,0.06);
+    --shadow-md: 0 4px 12px rgba(26,26,26,0.08);
+    --shadow-lg: 0 8px 24px rgba(26,26,26,0.10);
+    --shadow-xl: 0 12px 40px rgba(26,26,26,0.14);
+    --shadow-focus: 0 0 0 3px rgba(179,57,47,0.15);
+
+    /* Spacing */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-10: 40px;
+    --space-12: 48px;
+    --space-16: 64px;
+
+    /* Window */
+    --title-bar-height: 36px;
+    --dock-height: 64px;
+    --status-bar-height: 28px;
+    --window-radius: 8px;
+    --menu-radius: 6px;
+    --card-radius: 6px;
+    --button-radius: 4px;
+
+    /* Timing */
+    --duration-instant: 80ms;
+    --duration-fast: 150ms;
+    --duration-normal: 250ms;
+    --duration-slow: 400ms;
+    --duration-dramatic: 600ms;
+    --easing-smooth: cubic-bezier(0.25, 0.1, 0.25, 1);
+    --easing-enter: cubic-bezier(0, 0, 0.2, 1);
+    --easing-exit: cubic-bezier(0.4, 0, 1, 1);
+    --easing-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    /* Background */
+    --background: 40 20% 92%;
+    --foreground: 0 0% 10%;
+
+    --card: 40 20% 92%;
+    --card-foreground: 0 0% 10%;
+
+    --popover: 40 20% 92%;
+    --popover-foreground: 0 0% 10%;
+
+    --primary: 0 0% 10%;
+    --primary-foreground: 40 20% 92%;
+
+    --secondary: 40 10% 85%;
+    --secondary-foreground: 0 0% 10%;
+
+    --muted: 40 10% 85%;
+    --muted-foreground: 0 0% 40%;
+
+    --accent: 4 60% 44%;
+    --accent-foreground: 40 20% 92%;
+
+    --destructive: 4 60% 44%;
+    --destructive-foreground: 40 20% 92%;
+
+    --border: 40 10% 80%;
+    --input: 40 10% 80%;
+    --ring: 4 60% 44%;
+
+    --radius: 0.5rem;
+
+    /* Sidebar */
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.3% 26.1%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  * {
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    font-family: 'Noto Sans SC', system-ui, sans-serif;
+    background-color: var(--ink-50);
+    color: var(--ink-900);
+    letter-spacing: -0.01em;
+    line-height: 1.6;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--ink-400);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--ink-600);
+  }
+
+  ::-webkit-scrollbar-thumb:active {
+    background: var(--ink-700);
+  }
+}
+
+@layer components {
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid var(--glass-border);
+  }
+
+  .glass-active {
+    background: var(--glass-active);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid var(--glass-border);
+  }
+
+  .glass-strong {
+    background: rgba(240, 235, 228, 0.92);
+    backdrop-filter: blur(24px) saturate(200%);
+    -webkit-backdrop-filter: blur(24px) saturate(200%);
+    border: 1px solid var(--glass-border);
+  }
+
+  .ink-shadow-sm {
+    box-shadow: var(--shadow-sm);
+  }
+
+  .ink-shadow-md {
+    box-shadow: var(--shadow-md);
+  }
+
+  .ink-shadow-lg {
+    box-shadow: var(--shadow-lg);
+  }
+
+  .ink-shadow-xl {
+    box-shadow: var(--shadow-xl);
+  }
+
+  .text-display-xl {
+    font-family: 'ZCOOL XiaoWei', cursive, serif;
+    font-size: 48px;
+    font-weight: 400;
+    letter-spacing: 0.05em;
+  }
+
+  .text-display-lg {
+    font-family: 'ZCOOL XiaoWei', cursive, serif;
+    font-size: 32px;
+    font-weight: 400;
+    letter-spacing: 0.05em;
+  }
+
+  .text-heading-lg {
+    font-family: 'Noto Serif SC', Georgia, serif;
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  .text-heading-md {
+    font-family: 'Noto Serif SC', Georgia, serif;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  .text-heading-sm {
+    font-family: 'Noto Serif SC', Georgia, serif;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  .text-body-lg {
+    font-family: 'Noto Sans SC', system-ui, sans-serif;
+    font-size: 15px;
+    font-weight: 400;
+    line-height: 1.6;
+  }
+
+  .text-body-md {
+    font-family: 'Noto Sans SC', system-ui, sans-serif;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.6;
+  }
+
+  .text-body-sm {
+    font-family: 'Noto Sans SC', system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.6;
+  }
+
+  .text-mono-md {
+    font-family: 'Maple Mono CN', 'Courier New', monospace;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.6;
+  }
+
+  .text-caption {
+    font-family: 'Noto Sans SC', system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+
+  .desktop-icon-label {
+    text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  }
+}
+
+@layer utilities {
+  .will-change-transform {
+    will-change: transform;
+  }
+
+  .animation-instant {
+    transition-duration: var(--duration-instant);
+  }
+
+  .animation-fast {
+    transition-duration: var(--duration-fast);
+  }
+
+  .animation-normal {
+    transition-duration: var(--duration-normal);
+  }
+
+  .animation-slow {
+    transition-duration: var(--duration-slow);
+  }
+
+  .animation-dramatic {
+    transition-duration: var(--duration-dramatic);
+  }
+}

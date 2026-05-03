@@ -1,0 +1,26 @@
+[Unit]
+Description=mochan-linux web workstation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mochan
+Group=mochan
+EnvironmentFile=/etc/mochan/config.env
+ExecStart=/usr/local/bin/mochan run
+Restart=on-failure
+RestartSec=3
+WorkingDirectory=/var/lib/mochan
+
+# Hardening: server process itself is restricted; spawned shells run as the
+# user's normal session via sudo (Phase 1+).
+NoNewPrivileges=false
+ProtectSystem=full
+ProtectHome=false
+PrivateTmp=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

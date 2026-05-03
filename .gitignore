@@ -1,0 +1,25 @@
+# build artifacts
+bin/
+web/node_modules/
+web/dist/
+server/internal/static/dist/*
+!server/internal/static/dist/index.html
+
+# env / secrets — must never be committed
+.env
+.env.local
+*.env
+config.env
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# go
+*.out
+coverage.txt
+
+# logs
+*.log
