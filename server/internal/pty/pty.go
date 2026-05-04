@@ -4,32 +4,46 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
-	creackpty "github.com/creack/pty"
 
 	"github.com/alysechen/mochan-linux/server/internal/auth"
 )
 
+// Handler bridges browser WebSockets to long-lived PTY sessions.
 type Handler struct {
 	auth *auth.Authenticator
+	mgr  *Manager
 }
 
-func New(a *auth.Authenticator) *Handler {
-	return &Handler{auth: a}
+// New creates a Handler with the given idle TTL for unattended sessions.
+// idleTTL <= 0 → 5 minute default.
+func New(a *auth.Authenticator, idleTTL time.Duration) *Handler {
+	return &Handler{auth: a, mgr: NewManager(idleTTL)}
 }
 
-type controlMsg struct {
+// Close shuts down the manager and reaps all sessions.
+func (h *Handler) Close() { h.mgr.Close() }
+
+// Control messages between browser and server (text frames).
+type controlIn struct {
 	Type string `json:"type"`
-	Cols uint16 `json:"cols"`
-	Rows uint16 `json:"rows"`
+	Cols uint16 `json:"cols,omitempty"`
+	Rows uint16 `json:"rows,omitempty"`
+}
+
+type controlOut struct {
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+	Cols      uint16 `json:"cols,omitempty"`
+	Rows      uint16 `json:"rows,omitempty"`
+	BufferLen int    `json:"buffer_len,omitempty"`
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,75 +53,93 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Browser is same-origin via Cloudflare → NPM → us. No CSWSH worry,
-		// but still validate explicitly: only allow our public host.
 		OriginPatterns: []string{"linux.mochance.xyz", "localhost:*", "127.0.0.1:*"},
 	})
 	if err != nil {
-		log.Printf("pty: websocket accept failed: %v", err)
+		log.Printf("pty: accept failed: %v", err)
 		return
 	}
-	conn.SetReadLimit(1 << 20) // 1 MiB; browser writes are tiny key strokes
+	conn.SetReadLimit(1 << 20)
 	defer conn.CloseNow()
 
 	cols := uint16Param(r, "cols", 80)
 	rows := uint16Param(r, "rows", 24)
 
-	cmd := exec.Command("bash", "-l")
-	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" {
-		cmd.Dir = homeDir
-	}
-	cmd.Env = append(os.Environ(),
-		"TERM=xterm-256color",
-		"COLORTERM=truecolor",
-		"LANG=C.UTF-8",
-		"LC_ALL=C.UTF-8",
-	)
+	requestedID := r.URL.Query().Get("session")
 
-	ptmx, err := creackpty.StartWithSize(cmd, &creackpty.Winsize{Cols: cols, Rows: rows})
+	homeDir, _ := os.UserHomeDir()
+	session, created, err := h.mgr.GetOrCreate(requestedID, SessionOptions{
+		Cols:    cols,
+		Rows:    rows,
+		WorkDir: homeDir,
+	})
 	if err != nil {
-		log.Printf("pty: start failed: %v", err)
-		_ = conn.Close(websocket.StatusInternalError, "pty start failed")
+		log.Printf("pty: session create failed: %v", err)
+		_ = conn.Close(websocket.StatusInternalError, "session create failed")
 		return
 	}
-	defer func() {
-		_ = ptmx.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-		}
-	}()
+
+	// Apply (potentially updated) terminal size from this client.
+	_ = session.Resize(cols, rows)
+
+	subID, ch, snapshot := session.Subscribe()
+	defer session.Unsubscribe(subID)
+
+	if created {
+		log.Printf("pty: created session %s (cols=%d rows=%d)", session.ID, cols, rows)
+	} else {
+		log.Printf("pty: attached to session %s (replay %d bytes)", session.ID, len(snapshot))
+	}
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	// 1) Send the "attached" control frame so the client can latch the ID.
+	if err := writeControl(ctx, conn, controlOut{
+		Type:      "attached",
+		SessionID: session.ID,
+		Cols:      cols,
+		Rows:      rows,
+		BufferLen: len(snapshot),
+	}); err != nil {
+		return
+	}
+
+	// 2) Replay the buffer (binary).
+	if len(snapshot) > 0 {
+		if err := conn.Write(ctx, websocket.MessageBinary, snapshot); err != nil {
+			return
+		}
+	}
+
+	// 3) Bridge in both directions.
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// PTY → WS
+	// session → ws
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 32*1024)
 		for {
-			n, err := ptmx.Read(buf)
-			if n > 0 {
-				if werr := conn.Write(ctx, websocket.MessageBinary, buf[:n]); werr != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-session.Done():
+				cancel()
+				return
+			case data, ok := <-ch:
+				if !ok {
+					cancel()
+					return
+				}
+				if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 					cancel()
 					return
 				}
 			}
-			if err != nil {
-				if !errors.Is(err, io.EOF) && ctx.Err() == nil {
-					log.Printf("pty: read err: %v", err)
-				}
-				cancel()
-				return
-			}
 		}
 	}()
 
-	// WS → PTY
+	// ws → session
 	go func() {
 		defer wg.Done()
 		for {
@@ -118,24 +150,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			switch typ {
 			case websocket.MessageBinary:
-				if _, err := ptmx.Write(data); err != nil {
+				if _, err := session.Write(data); err != nil {
 					cancel()
 					return
 				}
 			case websocket.MessageText:
-				var ctl controlMsg
-				if err := json.Unmarshal(data, &ctl); err != nil {
+				var ctl controlIn
+				if json.Unmarshal(data, &ctl) != nil {
 					continue
 				}
-				if ctl.Type == "resize" && ctl.Cols > 0 && ctl.Rows > 0 {
-					_ = creackpty.Setsize(ptmx, &creackpty.Winsize{Cols: ctl.Cols, Rows: ctl.Rows})
+				switch ctl.Type {
+				case "resize":
+					_ = session.Resize(ctl.Cols, ctl.Rows)
 				}
 			}
 		}
 	}()
 
 	wg.Wait()
-	_ = conn.Close(websocket.StatusNormalClosure, "session ended")
+	_ = conn.Close(websocket.StatusNormalClosure, "session detached")
 }
 
 func (h *Handler) checkToken(r *http.Request) error {
@@ -152,6 +185,14 @@ func (h *Handler) checkToken(r *http.Request) error {
 		return errors.New("invalid token")
 	}
 	return nil
+}
+
+func writeControl(ctx context.Context, conn *websocket.Conn, ctl controlOut) error {
+	buf, err := json.Marshal(ctl)
+	if err != nil {
+		return err
+	}
+	return conn.Write(ctx, websocket.MessageText, buf)
 }
 
 func uint16Param(r *http.Request, name string, fallback uint16) uint16 {

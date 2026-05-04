@@ -156,7 +156,9 @@ func runServer() error {
 		})
 	})
 
-	r.Handle("/ws/pty", pty.New(authn))
+	ptyHandler := pty.New(authn, 5*time.Minute)
+	defer ptyHandler.Close()
+	r.Handle("/ws/pty", ptyHandler)
 
 	r.Handle("/*", spaHandler(staticFS))
 

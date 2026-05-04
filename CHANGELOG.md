@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-05-04
+
+Phase 7 — terminal session persistence and auto-reconnect.
+
+### Changed
+
+- `internal/pty` decouples PTY lifetime from any single WebSocket. A
+  process-wide `Manager` owns a pool of named `Session`s; each Session
+  keeps the PTY, a 256 KiB ring buffer of recent output, and a list of
+  active subscribers (typically just one client). When all clients
+  detach, an idle timer starts; sessions with zero subscribers for more
+  than 5 minutes are reaped.
+- `/ws/pty` accepts an opaque `?session=<id>` query parameter. If the
+  session exists, the new client attaches to it and receives the entire
+  ring buffer as a binary replay. If not, a new session is created
+  bound to that ID.
+- The first frame after a successful upgrade is now a JSON control
+  message:
+  ```
+  {"type":"attached","session_id":"<id>","cols":N,"rows":M,"buffer_len":B}
+  ```
+  followed by the `B` bytes of binary replay.
+- Frontend `apps/Terminal.tsx` generates a per-component random session
+  ID, includes it in the WebSocket URL, and on close auto-reconnects
+  with jittered exponential backoff (600 ms → 8 s cap, multiplier 1.6).
+  After a successful reconnect, an `[已重新连接]` notice is written
+  inline to the terminal.
+
+### Notes
+
+- Session IDs are not persisted to localStorage on purpose: opening
+  multiple Terminal windows in the same browser creates independent
+  shells, and a hard browser refresh starts a fresh shell. tmux/screen
+  remain the right tool for "I closed my laptop and want my shell back
+  next morning" scenarios.
+- The 5-minute idle TTL kicks in only when *no* clients are attached.
+  Long-running TUIs (htop, vim) are unaffected — the PTY produces
+  output continuously, but the timer only counts no-subscriber wall
+  clock time.
+- Reaper logs `pty: reaping idle session <id>` in the systemd journal.
+
 ## [0.7.0] — 2026-05-04
 
 Phase 6 — mobile / touch usability.
