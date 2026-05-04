@@ -13,7 +13,7 @@ mochan-linux 是一个**自托管的、浏览器即可访问的 Linux 工作站*
 
 ## 项目状态
 
-- 当前版本：**v0.4.0**
+- 当前版本：**v1.0.0**（首个稳定版）
 - 已验证宿主：Ubuntu 24.04 LTS x86_64（生产部署在 `linux.mochance.xyz`，文档见 [`deploy/`](deploy/)）
 - 实验兼容：Debian 12 / Ubuntu 22.04 / 任意带 systemd 的 Linux 发行版；架构 amd64 + arm64
 - 反向代理：Nginx Proxy Manager（已端到端验证，含 WebSocket 升级 + Let's Encrypt）、Caddy / Traefik / 原生 nginx 同样适用
@@ -28,19 +28,26 @@ mochan-linux 是一个**自托管的、浏览器即可访问的 Linux 工作站*
 - **代码编辑器**：CodeMirror 6 + `one-dark` 主题，按扩展名识别 JS / TS / JSON / Python / HTML / CSS / Markdown / YAML 自动语法高亮。
 - **系统监控**：`/api/sys/stat` 由 gopsutil 后端，每 2 秒前端轮询。CPU 总占用 + 每核占用、内存 / Swap、所有挂载点磁盘、网络累积 + 实时速率。
 - **进程管理**：`/api/sys/processes` 全量进程，`/api/sys/kill` 信号端点（拒绝 pid ≤ 1）。前端可按 PID/CPU/内存/名称排序、搜索、`TERM`/`INT`/`HUP`/`KILL` 信号选择对话框。
+- **PTY 持久会话**：`/ws/pty?session=<id>` 后端会保留 256 KiB 环形缓冲；浏览器 tab 睡眠、CF 间歇掐 WebSocket、地铁信号断都不会丢 `htop` / `vim` 状态。客户端走指数退避自动重连(600ms 起,封顶 8s),5 分钟无客户端的 session 自动回收。
+- **安全审计日志**：`/api/sys/audit/` 把登录成功 / 失败、`fs` 写操作、`sys.kill` 全部追加到 `<DataDir>/audit.log`(JSONL,10 MiB 轮转),前端 `审计日志` 应用按类型筛选、5 秒自动刷新、登录成功/失败实时计数。
+- **应用间联动**：FileManager 双击 `.md` → MarkdownEditor、图片 → ImageViewer、源码 → TextEditor,这些应用从 `/api/fs/read` 加载,保存按钮回写 `/api/fs/write`。
+- **设置真接入**：主题 / 语言 / 桌面壁纸由 `/api/settings/` 持久化到 `<DataDir>/settings.json`,换浏览器也保留。可上传任意图片做壁纸,文件存在 `<DataDir>/wallpapers/`。
 - **NOPASSWD sudo（可选）**：`mochan` 服务用户配 NOPASSWD sudo 后，浏览器终端里直接 `sudo apt install …` 测试自己开发的 Linux 应用，无需 SSH。
+- **移动端可用**：≤ 768 px 视口下窗口自动覆盖整屏(StatusBar 与 Dock 之间),拖动 / 调整大小禁用,标题栏按钮放大到 22 px 触屏可点。
 - **单二进制部署**：前端 build 后通过 `embed.FS` 嵌进 Go 二进制（约 13 MB），服务器只需要 systemd + bash，**无 Node 运行时、无 npm、无依赖目录**。
-- **多架构 release**：GitHub Actions 在每个 `v*` tag 自动出 `linux/amd64` 和 `linux/arm64` 二进制 + SHA256SUMS。
+- **多架构 release**：GitHub Actions 在每个 `v*` tag 自动出 `linux/amd64` 和 `linux/arm64` 二进制 + 单文件 `SHA256SUMS` 汇总。
 
 ## 界面预览
 
-> 截图待补，预计存放路径：
+> 截图待补,预计存放路径如下;在你自己的部署上跑一下 `https://your.domain` 即可看到。
 >
-> | 桌面 | 终端 |
+> | 桌面 + StatusBar + Dock | 终端 (xterm.js + tmux) |
 > |---|---|
 > | `docs/img/desktop.png` | `docs/img/terminal.png` |
-> | **文件管理器** | **系统监控** |
+> | **文件管理器 + CodeMirror** | **系统监控 (CPU 每核 / 内存 / 磁盘 / 网速)** |
 > | `docs/img/file-manager.png` | `docs/img/system-monitor.png` |
+> | **审计日志** | **设置 (主题 + 壁纸网格)** |
+> | `docs/img/audit-log.png` | `docs/img/settings.png` |
 
 ## 下载
 
