@@ -28,6 +28,7 @@ import (
 	"github.com/alysechen/mochan-linux/server/internal/config"
 	"github.com/alysechen/mochan-linux/server/internal/fsapi"
 	"github.com/alysechen/mochan-linux/server/internal/pty"
+	"github.com/alysechen/mochan-linux/server/internal/settings"
 	"github.com/alysechen/mochan-linux/server/internal/static"
 	"github.com/alysechen/mochan-linux/server/internal/sysinfo"
 )
@@ -126,6 +127,16 @@ func runServer() error {
 		}
 	}()
 
+	settingsStore, err := settings.NewStore(filepath.Join(cfg.DataDir, "settings.json"))
+	if err != nil {
+		return fmt.Errorf("settings store: %w", err)
+	}
+	wallpaperBucket, err := settings.NewBucket(filepath.Join(cfg.DataDir, "wallpapers"))
+	if err != nil {
+		return fmt.Errorf("wallpaper bucket: %w", err)
+	}
+	settingsHandler := settings.NewHandler(settingsStore, wallpaperBucket)
+
 	staticFS, err := static.FS()
 	if err != nil {
 		return err
@@ -153,6 +164,7 @@ func runServer() error {
 				sysinfo.New(auditLog).Mount(sr)
 				sr.Route("/audit", audit.NewHandler(auditLog).Mount)
 			})
+			p.Route("/settings", settingsHandler.Mount)
 		})
 	})
 

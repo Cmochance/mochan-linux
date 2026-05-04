@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-05-04
+
+Phase 8 — real Settings page backed by server persistence + wallpaper bucket.
+
+### Added
+
+- `internal/settings`: `Store` (atomic JSON write to
+  `<DataDir>/settings.json`, 0640) and `Bucket` for user-uploaded
+  wallpapers under `<DataDir>/wallpapers/`. Endpoints:
+  - `GET /api/settings/` → `{theme, language, wallpaper}`
+  - `PATCH /api/settings/` → merge keys, validate enum values
+  - `GET /api/settings/wallpapers/` → list bundled + user
+  - `POST /api/settings/wallpapers/` → multipart upload (extension
+    whitelist + filename guard against path traversal)
+  - `GET /api/settings/wallpapers/{name}` → serve user-uploaded image
+  - `DELETE /api/settings/wallpapers/{name}` → remove user wallpaper
+- `lib/settings.ts` typed client + `wallpaperUrl(id)` helper that
+  routes bundled IDs (`wallpaper-…`) to the static bundle and any other
+  ID to `/api/settings/wallpapers/<name>`.
+- `hooks/use-settings-sync.ts`: bootstraps zustand stores from
+  `/api/settings/` after auth, then subscribes to local mutations and
+  writes back debounced (300 ms). Server is the cross-device source of
+  truth; localStorage acts as a warm cache so the desktop renders
+  before the round-trip.
+- `apps/Settings.tsx` rewritten as a tabbed page:
+  - **外观**: theme buttons (水墨 / 夜色 / 宣纸) + wallpaper grid with
+    upload-and-delete UI for user wallpapers.
+  - **语言**: 中文 / English toggle.
+  - **关于**: app branding, GitHub / Releases links, live host info
+    fed by `/api/sys/stat` (hostname / OS / kernel / arch / uptime /
+    CPU / memory / load / disks).
+
+### Changed
+
+- `Desktop`, `LockScreen`, `AuthGate` now resolve the wallpaper URL via
+  `wallpaperUrl()` so user-uploaded images render alongside the
+  bundled set.
+- `WallpaperId` in `useDesktopStore` widened from a literal union to
+  `string` so user-uploaded filenames are valid IDs.
+
+### Notes
+
+- "端口" intentionally is **not** a UI knob. Listening port is set in
+  `/etc/mochan/config.env` and changing it requires `systemctl restart
+  mochan` plus an updated reverse-proxy upstream — wrong layer for an
+  in-app toggle.
+- The settings document does **not** include the password. Password
+  rotation is still `mochan hash-password` → edit `config.env` →
+  `systemctl restart mochan`.
+
 ## [0.8.0] — 2026-05-04
 
 Phase 7 — terminal session persistence and auto-reconnect.

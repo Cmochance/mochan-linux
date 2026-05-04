@@ -1,372 +1,352 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  Palette, Monitor, Volume2, Globe, Calendar, Info, Accessibility,
-  Sun, Moon, Droplets, Check
+  Palette, Globe, Info, Image as ImageIcon, Upload, Trash2,
+  Check, Server, Cpu, MemoryStick, HardDrive, Activity, ExternalLink,
 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { useSystemStore } from '@/stores/useSystemStore';
+import { useDesktopStore } from '@/stores/useDesktopStore';
+import { useAuthStore } from '@/stores/useAuthStore';
+import { settingsClient, wallpaperUrl, type Wallpaper } from '@/lib/settings';
+import { sysClient, formatBytes, formatUptime, type SysStat } from '@/lib/sys';
+import { ApiError } from '@/lib/api';
 
-type Theme = 'ink' | 'dark' | 'light';
-type Category = 'appearance' | 'display' | 'sound' | 'language' | 'datetime' | 'accessibility' | 'about';
-
-interface SettingsState {
-  theme: Theme;
-  wallpaper: string;
-  brightness: number;
-  volume: number;
-  notifications: boolean;
-  language: 'zh' | 'en';
-  timeFormat: '24h' | '12h';
-  showSeconds: boolean;
-  dateFormat: string;
-  highContrast: boolean;
-  largeText: boolean;
-  reducedMotion: boolean;
-}
-
-const SETTINGS_KEY = 'ink-os-settings';
-
-const defaultSettings: SettingsState = {
-  theme: 'ink',
-  wallpaper: 'default',
-  brightness: 80,
-  volume: 60,
-  notifications: true,
-  language: 'zh',
-  timeFormat: '24h',
-  showSeconds: false,
-  dateFormat: 'YYYY-MM-DD',
-  highContrast: false,
-  largeText: false,
-  reducedMotion: false,
-};
-
-const wallpapers = [
-  { id: 'default', name: 'Mountain Landscape (山水)', color: '#8B9DAF' },
-  { id: 'ink-splash', name: 'Ink Splash (墨韵)', color: '#2d2d2d' },
-  { id: 'bamboo', name: 'Bamboo (竹林)', color: '#6B7F5C' },
-  { id: 'lotus', name: 'Lotus (荷花)', color: '#9B8AA0' },
-  { id: 'calligraphy', name: 'Calligraphy (书法)', color: '#A0845C' },
-];
-
-function loadSettings(): SettingsState {
-  try {
-    const saved = localStorage.getItem(SETTINGS_KEY);
-    return saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
-  } catch {
-    return defaultSettings;
-  }
-}
-
-function saveSettings(s: SettingsState) {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
-}
+type Tab = 'appearance' | 'language' | 'about';
 
 export default function Settings() {
-  const [settings, setSettings] = useState<SettingsState>(loadSettings);
-  const [activeCategory, setActiveCategory] = useState<Category>('appearance');
+  const [tab, setTab] = useState<Tab>('appearance');
 
-  useEffect(() => { saveSettings(settings); }, [settings]);
-
-  const update = <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => {
-    setSettings(prev => ({ ...prev, [key]: value }));
-  };
-
-  const categories: { id: Category; name: string; icon: React.ReactNode }[] = [
-    { id: 'appearance', name: 'Personalization (个性化)', icon: <Palette size={16} /> },
-    { id: 'display', name: 'Display (显示)', icon: <Monitor size={16} /> },
-    { id: 'sound', name: 'Sound (声音)', icon: <Volume2 size={16} /> },
-    { id: 'language', name: 'Language (语言)', icon: <Globe size={16} /> },
-    { id: 'datetime', name: 'Date & Time (日期时间)', icon: <Calendar size={16} /> },
-    { id: 'accessibility', name: 'Accessibility (辅助功能)', icon: <Accessibility size={16} /> },
-    { id: 'about', name: 'About (关于)', icon: <Info size={16} /> },
+  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: 'appearance', label: '外观', icon: <Palette className="h-4 w-4" /> },
+    { id: 'language', label: '语言', icon: <Globe className="h-4 w-4" /> },
+    { id: 'about', label: '关于', icon: <Info className="h-4 w-4" /> },
   ];
 
-  const ToggleSwitch = ({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) => (
-    <button
-      onClick={() => onChange(!checked)}
-      className={`relative w-10 h-5 rounded-full transition-colors ${checked ? 'bg-cinnabar' : 'bg-ink-300'}`}
-    >
-      <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
-    </button>
-  );
-
   return (
-    <div className="w-full h-full flex bg-ink-50 overflow-hidden">
-      {/* Sidebar */}
-      <div className="w-52 bg-ink-100 border-r border-ink-200 flex-shrink-0 overflow-y-auto">
-        {categories.map(cat => (
+    <div className="flex h-full" style={{ backgroundColor: 'var(--ink-50)' }}>
+      <nav
+        className="flex w-44 shrink-0 flex-col gap-1 border-r p-3"
+        style={{ borderColor: 'var(--ink-200)' }}
+      >
+        {tabs.map((t) => (
           <button
-            key={cat.id}
-            onClick={() => setActiveCategory(cat.id)}
-            className={`w-full flex items-center gap-2 px-4 py-2.5 text-body-sm transition-colors text-left ${
-              activeCategory === cat.id
-                ? 'bg-ink-50 border-l-2 border-cinnabar text-ink-800'
-                : 'border-l-2 border-transparent text-ink-600 hover:bg-ink-50'
-            }`}
+            key={t.id}
+            className="flex items-center gap-2 rounded px-3 py-2 text-left text-sm"
+            style={{
+              backgroundColor: tab === t.id ? 'var(--ink-200)' : 'transparent',
+              color: tab === t.id ? 'var(--ink-900)' : 'var(--ink-700)',
+            }}
+            onClick={() => setTab(t.id)}
           >
-            {cat.icon}
-            <span className="truncate">{cat.name}</span>
+            {t.icon}
+            <span>{t.label}</span>
           </button>
         ))}
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6">
-        {activeCategory === 'appearance' && (
-          <div className="space-y-6">
-            <h2 className="text-heading-md text-ink-800">Personalization (个性化)</h2>
-
-            {/* Theme */}
-            <div className="bg-ink-50 rounded-md p-4 border border-ink-200">
-              <h3 className="text-body-sm font-medium text-ink-700 mb-3">Theme (主题)</h3>
-              <div className="grid grid-cols-3 gap-3">
-                {[
-                  { id: 'ink' as Theme, name: 'Ink Wash (水墨)', icon: <Droplets size={24} /> },
-                  { id: 'dark' as Theme, name: 'Ink Black (墨黑)', icon: <Moon size={24} /> },
-                  { id: 'light' as Theme, name: 'Rice Paper (宣纸)', icon: <Sun size={24} /> },
-                ].map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => update('theme', t.id)}
-                    className={`flex flex-col items-center gap-2 p-4 rounded-md border-2 transition-colors ${
-                      settings.theme === t.id ? 'border-cinnabar bg-[rgba(179,57,47,0.05)]' : 'border-ink-200 hover:border-ink-400'
-                    }`}
-                  >
-                    <span className="text-ink-600">{t.icon}</span>
-                    <span className="text-body-sm text-ink-700">{t.name}</span>
-                    {settings.theme === t.id && <Check size={16} className="text-cinnabar" />}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Wallpaper */}
-            <div className="bg-ink-50 rounded-md p-4 border border-ink-200">
-              <h3 className="text-body-sm font-medium text-ink-700 mb-3">Wallpaper (壁纸)</h3>
-              <div className="grid grid-cols-5 gap-3">
-                {wallpapers.map(wp => (
-                  <button
-                    key={wp.id}
-                    onClick={() => update('wallpaper', wp.id)}
-                    className={`relative rounded-md overflow-hidden border-2 transition-all aspect-video ${
-                      settings.wallpaper === wp.id ? 'border-cinnabar ring-2 ring-cinnabar/20' : 'border-ink-200 hover:border-ink-400'
-                    }`}
-                    style={{ backgroundColor: wp.color }}
-                  >
-                    {settings.wallpaper === wp.id && (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <Check size={20} className="text-white drop-shadow-lg" />
-                      </div>
-                    )}
-                    <span className="absolute bottom-1 left-1 right-1 text-caption text-white text-center drop-shadow-lg truncate">{wp.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeCategory === 'display' && (
-          <div className="space-y-6">
-            <h2 className="text-heading-md text-ink-800">Display (显示)</h2>
-            <div className="bg-ink-50 rounded-md p-4 border border-ink-200 space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-body-sm text-ink-700">Brightness (亮度)</span>
-                  <span className="text-caption text-ink-500">{settings.brightness}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={settings.brightness}
-                  onChange={e => update('brightness', parseInt(e.target.value))}
-                  className="w-full h-1.5 bg-ink-200 rounded-full appearance-none cursor-pointer accent-cinnabar"
-                  style={{ accentColor: '#b3392f' }}
-                />
-              </div>
-              <div className="border-t border-ink-200 pt-3">
-                <div className="text-body-sm text-ink-700 mb-1">Resolution (分辨率)</div>
-                <div className="text-body-sm text-ink-500">1920 × 1080 (Full HD)</div>
-              </div>
-              <div className="border-t border-ink-200 pt-3">
-                <div className="text-body-sm text-ink-700 mb-2">Scale (缩放)</div>
-                <div className="flex gap-2">
-                  {['100%', '125%', '150%'].map(s => (
-                    <button
-                      key={s}
-                      className="px-3 py-1 rounded border border-ink-300 text-body-sm text-ink-600 hover:border-cinnabar transition-colors"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeCategory === 'sound' && (
-          <div className="space-y-6">
-            <h2 className="text-heading-md text-ink-800">Sound (声音)</h2>
-            <div className="bg-ink-50 rounded-md p-4 border border-ink-200 space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-body-sm text-ink-700">Master Volume (主音量)</span>
-                  <span className="text-caption text-ink-500">{settings.volume}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={settings.volume}
-                  onChange={e => update('volume', parseInt(e.target.value))}
-                  className="w-full h-1.5 bg-ink-200 rounded-full appearance-none cursor-pointer"
-                  style={{ accentColor: '#b3392f' }}
-                />
-              </div>
-              <div className="flex items-center justify-between border-t border-ink-200 pt-3">
-                <span className="text-body-sm text-ink-700">Notification Sounds (通知声音)</span>
-                <ToggleSwitch checked={settings.notifications} onChange={v => update('notifications', v)} />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeCategory === 'language' && (
-          <div className="space-y-6">
-            <h2 className="text-heading-md text-ink-800">Language (语言)</h2>
-            <div className="bg-ink-50 rounded-md p-4 border border-ink-200 space-y-3">
-              <div className="text-body-sm text-ink-700 mb-2">Interface Language (界面语言)</div>
-              {[
-                { id: 'zh' as const, name: '中文 (Chinese)' },
-                { id: 'en' as const, name: 'English (英文)' },
-              ].map(lang => (
-                <button
-                  key={lang.id}
-                  onClick={() => update('language', lang.id)}
-                  className={`w-full flex items-center justify-between p-3 rounded-md border transition-colors ${
-                    settings.language === lang.id ? 'border-cinnabar bg-[rgba(179,57,47,0.05)]' : 'border-ink-200 hover:border-ink-400'
-                  }`}
-                >
-                  <span className="text-body-sm text-ink-700">{lang.name}</span>
-                  {settings.language === lang.id && <Check size={16} className="text-cinnabar" />}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {activeCategory === 'datetime' && (
-          <div className="space-y-6">
-            <h2 className="text-heading-md text-ink-800">Date & Time (日期时间)</h2>
-            <div className="bg-ink-50 rounded-md p-4 border border-ink-200 space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-body-sm text-ink-700">Time Format (时间格式)</span>
-                <div className="flex gap-2">
-                  {(['24h', '12h'] as const).map(f => (
-                    <button
-                      key={f}
-                      onClick={() => update('timeFormat', f)}
-                      className={`px-3 py-1 rounded text-body-sm border transition-colors ${
-                        settings.timeFormat === f ? 'border-cinnabar bg-cinnabar text-white' : 'border-ink-300 text-ink-600 hover:border-ink-500'
-                      }`}
-                    >
-                      {f}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center justify-between border-t border-ink-200 pt-3">
-                <span className="text-body-sm text-ink-700">Show Seconds (显示秒数)</span>
-                <ToggleSwitch checked={settings.showSeconds} onChange={v => update('showSeconds', v)} />
-              </div>
-              <div className="flex items-center justify-between border-t border-ink-200 pt-3">
-                <span className="text-body-sm text-ink-700">Date Format (日期格式)</span>
-                <select
-                  value={settings.dateFormat}
-                  onChange={e => update('dateFormat', e.target.value)}
-                  className="bg-ink-100 border border-ink-300 rounded px-2 py-1 text-body-sm text-ink-700 outline-none"
-                >
-                  <option value="YYYY-MM-DD">YYYY-MM-DD</option>
-                  <option value="DD/MM/YYYY">DD/MM/YYYY</option>
-                  <option value="MM/DD/YYYY">MM/DD/YYYY</option>
-                </select>
-              </div>
-              <div className="border-t border-ink-200 pt-3">
-                <div className="text-body-sm text-ink-700 mb-1">Time Zone (时区)</div>
-                <div className="text-body-sm text-ink-500">{Intl.DateTimeFormat().resolvedOptions().timeZone}</div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeCategory === 'accessibility' && (
-          <div className="space-y-6">
-            <h2 className="text-heading-md text-ink-800">Accessibility (辅助功能)</h2>
-            <div className="bg-ink-50 rounded-md p-4 border border-ink-200 space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-body-sm text-ink-700">High Contrast (高对比度)</div>
-                  <div className="text-caption text-ink-500">Enhanced visibility for all UI elements</div>
-                </div>
-                <ToggleSwitch checked={settings.highContrast} onChange={v => update('highContrast', v)} />
-              </div>
-              <div className="flex items-center justify-between border-t border-ink-200 pt-3">
-                <div>
-                  <div className="text-body-sm text-ink-700">Large Text (大字体)</div>
-                  <div className="text-caption text-ink-500">Scale up all text by 1.25x</div>
-                </div>
-                <ToggleSwitch checked={settings.largeText} onChange={v => update('largeText', v)} />
-              </div>
-              <div className="flex items-center justify-between border-t border-ink-200 pt-3">
-                <div>
-                  <div className="text-body-sm text-ink-700">Reduced Motion (减少动画)</div>
-                  <div className="text-caption text-ink-500">Disable all animations</div>
-                </div>
-                <ToggleSwitch checked={settings.reducedMotion} onChange={v => update('reducedMotion', v)} />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeCategory === 'about' && (
-          <div className="space-y-6">
-            <h2 className="text-heading-md text-ink-800">About Ink OS (关于)</h2>
-            <div className="bg-ink-50 rounded-md p-6 border border-ink-200 text-center">
-              <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-ink-800 flex items-center justify-center">
-                <span className="text-ink-50 font-display text-4xl">墨</span>
-              </div>
-              <div className="text-heading-lg text-ink-800 mb-1">Ink OS</div>
-              <div className="text-body-sm text-ink-500 mb-4">Version (版本) 1.0.0</div>
-              <div className="text-caption text-ink-400 mb-2">Build Date: 2024-06-15</div>
-              <div className="space-y-2 text-body-sm text-ink-600 max-w-xs mx-auto text-left mt-4">
-                <div className="flex justify-between border-b border-ink-200 pb-1">
-                  <span>Total Apps (应用总数)</span>
-                  <span className="font-medium">57</span>
-                </div>
-                <div className="flex justify-between border-b border-ink-200 pb-1">
-                  <span>DE (桌面环境)</span>
-                  <span className="font-medium">Ink Desktop</span>
-                </div>
-                <div className="flex justify-between border-b border-ink-200 pb-1">
-                  <span>Theme Engine (主题引擎)</span>
-                  <span className="font-medium">Ink Wash 1.0</span>
-                </div>
-                <div className="flex justify-between border-b border-ink-200 pb-1">
-                  <span>License (许可证)</span>
-                  <span className="font-medium">MIT</span>
-                </div>
-              </div>
-              <div className="mt-4 text-caption text-ink-400">
-                Made with traditional Chinese ink-wash aesthetics.
-              </div>
-              <div className="text-caption text-ink-400">
-                以水墨之美，构建数字世界。
-              </div>
-            </div>
-          </div>
-        )}
+      </nav>
+      <div className="flex-1 overflow-auto p-6">
+        {tab === 'appearance' && <AppearanceTab />}
+        {tab === 'language' && <LanguageTab />}
+        {tab === 'about' && <AboutTab />}
       </div>
     </div>
   );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="mb-6">
+      <div className="mb-2 text-sm font-medium" style={{ color: 'var(--ink-600)' }}>
+        {title}
+      </div>
+      <div
+        className="rounded-lg border p-4"
+        style={{ borderColor: 'var(--ink-200)', backgroundColor: 'var(--ink-100)' }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ----- Appearance: theme + wallpaper -----
+
+function AppearanceTab() {
+  const theme = useSystemStore((s) => s.theme);
+  const setTheme = useSystemStore((s) => s.setTheme);
+  const wallpaper = useDesktopStore((s) => s.wallpaper);
+  const setWallpaper = useDesktopStore((s) => s.setWallpaper);
+
+  const [wallpapers, setWallpapers] = useState<Wallpaper[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const r = await settingsClient.listWallpapers();
+      setWallpapers(r.wallpapers);
+      setError(null);
+    } catch (e) {
+      setError(toMsg(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const onUpload = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    try {
+      await settingsClient.uploadWallpaper(files);
+      void refresh();
+    } catch (e) {
+      setError(toMsg(e));
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const onDelete = async (w: Wallpaper) => {
+    if (w.source !== 'user') return;
+    if (!window.confirm(`删除壁纸 "${w.name}"?`)) return;
+    try {
+      await settingsClient.deleteWallpaper(w.name);
+      if (wallpaper === w.name) setWallpaper('wallpaper-default' as never);
+      void refresh();
+    } catch (e) {
+      setError(toMsg(e));
+    }
+  };
+
+  return (
+    <div>
+      <Section title="主题">
+        <div className="flex gap-2">
+          {(['ink', 'dark', 'light'] as const).map((t) => (
+            <Button
+              key={t}
+              variant={theme === t ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setTheme(t)}
+            >
+              {theme === t && <Check className="mr-1 h-3.5 w-3.5" />}
+              {t === 'ink' ? '水墨' : t === 'dark' ? '夜色' : '宣纸'}
+            </Button>
+          ))}
+        </div>
+      </Section>
+
+      <Section title="桌面壁纸">
+        <div className="mb-3 flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => onUpload(e.target.files)}
+          />
+          <Button size="sm" variant="outline" onClick={() => fileInputRef.current?.click()}>
+            <Upload className="mr-1 h-3.5 w-3.5" />
+            上传新壁纸
+          </Button>
+          <span className="text-xs" style={{ color: 'var(--ink-500)' }}>
+            {wallpapers.length} 张可选 · 上传到 <span className="font-mono">/var/lib/mochan/wallpapers/</span>
+          </span>
+        </div>
+
+        {error && (
+          <div className="mb-3 rounded border border-red-300 bg-red-50 p-2 text-sm text-red-700">
+            {error}
+          </div>
+        )}
+
+        <div className="grid grid-cols-3 gap-3 md:grid-cols-4">
+          {wallpapers.map((w) => {
+            const url = w.source === 'bundled' ? wallpaperUrl(w.name) : w.url;
+            const active = wallpaper === w.name;
+            return (
+              <button
+                key={w.name}
+                onClick={() => setWallpaper(w.name as never)}
+                className="group relative overflow-hidden rounded border-2 transition-all"
+                style={{
+                  aspectRatio: '16/10',
+                  borderColor: active ? 'var(--cinnabar)' : 'transparent',
+                  backgroundColor: 'var(--ink-200)',
+                }}
+              >
+                <img src={url} alt={w.name} className="h-full w-full object-cover" loading="lazy" />
+                {active && (
+                  <div
+                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full"
+                    style={{ backgroundColor: 'var(--cinnabar)' }}
+                  >
+                    <Check className="h-3 w-3 text-white" />
+                  </div>
+                )}
+                {w.source === 'user' && (
+                  <button
+                    className="absolute left-1 top-1 hidden rounded bg-red-600 p-1 text-white group-hover:block"
+                    title="删除"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      void onDelete(w);
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                )}
+                <div
+                  className="absolute bottom-0 left-0 right-0 truncate px-1.5 py-0.5 text-[10px]"
+                  style={{ backgroundColor: 'rgba(0,0,0,0.6)', color: '#fff' }}
+                >
+                  {w.source === 'bundled' ? <ImageIcon className="mr-0.5 inline h-2.5 w-2.5" /> : null}
+                  {w.name}
+                </div>
+              </button>
+            );
+          })}
+          {wallpapers.length === 0 && !loading && (
+            <div className="col-span-full text-sm" style={{ color: 'var(--ink-400)' }}>
+              （未找到壁纸）
+            </div>
+          )}
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+// ----- Language tab -----
+
+function LanguageTab() {
+  const language = useSystemStore((s) => s.language);
+  const setLanguage = useSystemStore((s) => s.setLanguage);
+
+  return (
+    <div>
+      <Section title="界面语言">
+        <div className="flex gap-2">
+          <Button variant={language === 'zh' ? 'default' : 'outline'} size="sm" onClick={() => setLanguage('zh')}>
+            {language === 'zh' && <Check className="mr-1 h-3.5 w-3.5" />}
+            中文
+          </Button>
+          <Button variant={language === 'en' ? 'default' : 'outline'} size="sm" onClick={() => setLanguage('en')}>
+            {language === 'en' && <Check className="mr-1 h-3.5 w-3.5" />}
+            English
+          </Button>
+        </div>
+        <div className="mt-3 text-xs" style={{ color: 'var(--ink-500)' }}>
+          目前桌面壳层只支持中文和英文,各应用内部的语言可能需要在应用内单独切换。
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+// ----- About tab -----
+
+function AboutTab() {
+  const username = useAuthStore((s) => s.username);
+  const [stat, setStat] = useState<SysStat | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void sysClient
+      .stat()
+      .then(setStat)
+      .catch((e) => setError(toMsg(e)));
+  }, []);
+
+  return (
+    <div>
+      <Section title="关于本系统">
+        <div className="flex items-start gap-4">
+          <div
+            className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl"
+            style={{ backgroundColor: 'var(--ink-200)', color: 'var(--ink-700)' }}
+          >
+            <span className="text-3xl" style={{ fontFamily: "'Noto Serif SC', serif" }}>
+              墨
+            </span>
+          </div>
+          <div>
+            <div className="text-xl font-medium" style={{ color: 'var(--ink-900)', fontFamily: "'Noto Serif SC', serif" }}>
+              水墨 Linux
+            </div>
+            <div className="mt-1 text-sm" style={{ color: 'var(--ink-500)' }}>
+              Self-hosted browser-accessible Linux workstation
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+              <a
+                href="https://github.com/Cmochance/mochan-linux"
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1 rounded border px-2 py-1"
+                style={{ borderColor: 'var(--ink-300)', color: 'var(--ink-700)' }}
+              >
+                <ExternalLink className="h-3 w-3" />
+                GitHub
+              </a>
+              <a
+                href="https://github.com/Cmochance/mochan-linux/releases"
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1 rounded border px-2 py-1"
+                style={{ borderColor: 'var(--ink-300)', color: 'var(--ink-700)' }}
+              >
+                <ExternalLink className="h-3 w-3" />
+                Releases
+              </a>
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="主机信息">
+        {error && <div className="text-sm text-red-600">{error}</div>}
+        {!stat && !error && (
+          <div className="text-sm" style={{ color: 'var(--ink-400)' }}>加载中…</div>
+        )}
+        {stat && (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            <KV icon={<Server className="h-3.5 w-3.5" />} k="主机名" v={stat.hostname} />
+            <KV icon={<Server className="h-3.5 w-3.5" />} k="操作系统" v={stat.os} />
+            <KV icon={<Server className="h-3.5 w-3.5" />} k="内核" v={stat.kernel} />
+            <KV icon={<Cpu className="h-3.5 w-3.5" />} k="架构" v={stat.arch} />
+            <KV icon={<Activity className="h-3.5 w-3.5" />} k="已运行" v={formatUptime(stat.uptime)} />
+            <KV icon={<Cpu className="h-3.5 w-3.5" />} k="CPU 核数" v={String(stat.cpu_count)} />
+            <KV icon={<MemoryStick className="h-3.5 w-3.5" />} k="内存" v={`${formatBytes(stat.mem_used)} / ${formatBytes(stat.mem_total)}`} />
+            <KV icon={<HardDrive className="h-3.5 w-3.5" />} k="磁盘挂载" v={`${stat.disks.length} 个`} />
+            <KV icon={<Activity className="h-3.5 w-3.5" />} k="负载" v={`${stat.load_1.toFixed(2)} / ${stat.load_5.toFixed(2)} / ${stat.load_15.toFixed(2)}`} />
+            <KV icon={<Activity className="h-3.5 w-3.5" />} k="当前用户" v={username || '-'} />
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+function KV({ icon, k, v }: { icon: React.ReactNode; k: string; v: string }) {
+  return (
+    <div className="flex items-center justify-between border-b border-dashed py-1" style={{ borderColor: 'var(--ink-200)' }}>
+      <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--ink-500)' }}>
+        {icon}
+        {k}
+      </span>
+      <span className="font-mono text-xs tabular-nums" style={{ color: 'var(--ink-800)' }}>
+        {v}
+      </span>
+    </div>
+  );
+}
+
+function toMsg(e: unknown): string {
+  if (e instanceof ApiError) return e.body || `错误 ${e.status}`;
+  if (e instanceof Error) return e.message;
+  return String(e);
 }

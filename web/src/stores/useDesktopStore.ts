@@ -9,7 +9,10 @@ export interface DesktopIconData {
   y: number;
 }
 
-export type WallpaperId = 'wallpaper-default' | 'wallpaper-ink-splash' | 'wallpaper-bamboo' | 'wallpaper-lotus' | 'wallpaper-calligraphy';
+// Wallpaper id: a bundled name like "wallpaper-bamboo", or a user-uploaded
+// filename like "myphoto.png". Stored verbatim; resolved through
+// `wallpaperUrl` in `lib/settings`.
+export type WallpaperId = string;
 
 interface ContextMenuState {
   x: number;

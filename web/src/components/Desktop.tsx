@@ -5,6 +5,7 @@ import { useAppStore } from '@/stores/useAppStore';
 import { useSystemStore } from '@/stores/useSystemStore';
 import { useWindowStore } from '@/stores/useWindowStore';
 import { DesktopIcon } from './DesktopIcon';
+import { wallpaperUrl } from '@/lib/settings';
 
 export function Desktop() {
   const wallpaper = useDesktopStore((s) => s.wallpaper);
@@ -124,7 +125,7 @@ export function Desktop() {
       style={{
         top: '28px',
         bottom: '64px',
-        backgroundImage: `url(./${wallpaper}.jpg)`,
+        backgroundImage: `url(${wallpaperUrl(wallpaper)})`,
         backgroundSize: 'cover',
         backgroundPosition: 'center',
         zIndex: 0,

@@ -6,10 +6,12 @@ import { AppLauncher } from './AppLauncher';
 import { BootScreen } from './BootScreen';
 import { LockScreen } from './LockScreen';
 import { WindowManager } from './WindowManager';
+import { useSettingsSync } from '@/hooks/use-settings-sync';
 
 export default function Layout() {
   const booted = useSystemStore((s) => s.booted);
   const locked = useSystemStore((s) => s.locked);
+  useSettingsSync();
 
   if (!booted) {
     return <BootScreen />;

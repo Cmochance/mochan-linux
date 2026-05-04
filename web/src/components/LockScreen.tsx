@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSystemStore } from '@/stores/useSystemStore';
 import { useDesktopStore } from '@/stores/useDesktopStore';
+import { wallpaperUrl } from '@/lib/settings';
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 
@@ -30,7 +31,7 @@ export function LockScreen() {
         <motion.div
           className="fixed inset-0 z-[5000] flex flex-col items-center justify-center cursor-pointer"
           style={{
-            backgroundImage: `url(./${wallpaper}.jpg)`,
+            backgroundImage: `url(${wallpaperUrl(wallpaper)})`,
             backgroundSize: 'cover',
             backgroundPosition: 'center',
           }}

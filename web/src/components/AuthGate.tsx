@@ -4,6 +4,7 @@ import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useDesktopStore } from '@/stores/useDesktopStore';
+import { wallpaperUrl } from '@/lib/settings';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -32,7 +33,7 @@ function SessionSplash() {
     <div
       className="fixed inset-0 z-[6000]"
       style={{
-        backgroundImage: `url(./${wallpaper}.jpg)`,
+        backgroundImage: `url(${wallpaperUrl(wallpaper)})`,
         backgroundSize: 'cover',
         backgroundPosition: 'center',
       }}
@@ -95,7 +96,7 @@ function LoginScreen() {
     <motion.div
       className="fixed inset-0 z-[6000] flex flex-col items-center justify-center px-4"
       style={{
-        backgroundImage: `url(./${wallpaper}.jpg)`,
+        backgroundImage: `url(${wallpaperUrl(wallpaper)})`,
         backgroundSize: 'cover',
         backgroundPosition: 'center',
       }}
