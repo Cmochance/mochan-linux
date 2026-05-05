@@ -23,3 +23,7 @@ coverage.txt
 
 # logs
 *.log
+
+# local agent runtime notes
+.tmp/
+codex_history/
