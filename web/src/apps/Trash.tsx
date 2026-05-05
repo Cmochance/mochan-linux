@@ -1,40 +1,22 @@
-import { useState, useEffect } from 'react';
-import { Trash2, RotateCcw, AlertTriangle, Folder, File, Image, Music, Video, FileText } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Trash2, RotateCcw, AlertTriangle, Folder, File, Image, Music, Video, FileText, RefreshCw } from 'lucide-react';
+import { ApiError } from '@/lib/api';
+import { formatSize } from '@/lib/fs';
+import { trashClient, type TrashItem } from '@/lib/trash';
 
-interface TrashedItem {
-  id: string;
-  name: string;
-  type: 'folder' | 'file' | 'image' | 'music' | 'video' | 'text';
-  size: number;
-  deletedAt: string;
-  originalLocation: string;
+type TrashIconType = 'folder' | 'file' | 'image' | 'music' | 'video' | 'text';
+
+function getItemType(item: TrashItem): TrashIconType {
+  if (item.is_dir) return 'folder';
+  const ext = item.name.split('.').pop()?.toLowerCase() ?? '';
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'avif'].includes(ext)) return 'image';
+  if (['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a'].includes(ext)) return 'music';
+  if (['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v'].includes(ext)) return 'video';
+  if (['txt', 'md', 'json', 'yaml', 'yml', 'csv', 'log', 'go', 'ts', 'tsx', 'js', 'jsx', 'css', 'html'].includes(ext)) return 'text';
+  return 'file';
 }
 
-const TRASH_KEY = 'ink-os-trash';
-
-function loadTrash(): TrashedItem[] {
-  try {
-    const saved = localStorage.getItem(TRASH_KEY);
-    return saved ? JSON.parse(saved) : [
-      { id: 'trash_1', name: 'old-document.txt', type: 'text', size: 2048, deletedAt: '2024-03-15T10:30:00', originalLocation: 'Documents (文档)' },
-      { id: 'trash_2', name: 'temp-folder', type: 'folder', size: 0, deletedAt: '2024-04-01T14:22:00', originalLocation: 'Desktop (桌面)' },
-      { id: 'trash_3', name: 'screenshot-old.png', type: 'image', size: 1536000, deletedAt: '2024-04-20T09:15:00', originalLocation: 'Pictures (图片)' },
-    ];
-  } catch { return []; }
-}
-
-function saveTrash(items: TrashedItem[]) {
-  localStorage.setItem(TRASH_KEY, JSON.stringify(items));
-}
-
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '--';
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
-
-function getFileIcon(type: string, size: number = 16) {
+function getFileIcon(type: TrashIconType, size: number = 16) {
   switch (type) {
     case 'folder': return <Folder size={size} className="text-ink-400" />;
     case 'image': return <Image size={size} className="text-ink-400" />;
@@ -52,17 +34,48 @@ function formatDate(dateStr: string): string {
 function daysSince(dateStr: string): number {
   const deleted = new Date(dateStr).getTime();
   const now = Date.now();
-  return Math.floor((now - deleted) / (1000 * 60 * 60 * 24));
+  return Math.max(0, Math.floor((now - deleted) / (1000 * 60 * 60 * 24)));
+}
+
+function parentPath(path: string): string {
+  const normalized = path.replace(/\/+$/, '');
+  const i = normalized.lastIndexOf('/');
+  if (i <= 0) return '/';
+  return normalized.slice(0, i);
 }
 
 export default function Trash() {
-  const [items, setItems] = useState<TrashedItem[]>(loadTrash);
+  const [items, setItems] = useState<TrashItem[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => { saveTrash(items); }, [items]);
+  async function refresh() {
+    setLoading(true);
+    setError(null);
+    try {
+      setItems(await trashClient.list());
+    } catch (err) {
+      setError(toMsg(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  useEffect(() => {
+    const liveIds = new Set(items.map((item) => item.id));
+    setSelectedIds((prev) => new Set([...prev].filter((id) => liveIds.has(id))));
+  }, [items]);
+
+  const totalSize = useMemo(() => items.reduce((sum, item) => sum + item.size, 0), [items]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
@@ -78,44 +91,43 @@ export default function Trash() {
     else setSelectedIds(new Set(items.map(i => i.id)));
   };
 
-  const restoreItems = (ids: string[]) => {
-    const fsItems = JSON.parse(localStorage.getItem('ink-os-file-system') || '{"items":[]}');
-    const toRestore = items.filter(i => ids.includes(i.id));
-    toRestore.forEach(item => {
-      fsItems.items.push({
-        id: item.id.replace('trash_', ''),
-        name: item.name,
-        type: item.type,
-        size: item.size,
-        modified: new Date().toISOString().split('T')[0],
-        parentId: 'root',
-      });
+  async function restoreItems(ids: string[]) {
+    await runAction(async () => {
+      for (const id of ids) await trashClient.restore(id);
+      setShowRestoreConfirm(false);
     });
-    localStorage.setItem('ink-os-file-system', JSON.stringify(fsItems));
-    setItems(prev => prev.filter(i => !ids.includes(i.id)));
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      ids.forEach(id => next.delete(id));
-      return next;
-    });
-    setShowRestoreConfirm(false);
-  };
+  }
 
-  const permanentlyDelete = (ids: string[]) => {
-    setItems(prev => prev.filter(i => !ids.includes(i.id)));
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      ids.forEach(id => next.delete(id));
-      return next;
+  async function permanentlyDelete(ids: string[]) {
+    await runAction(async () => {
+      await trashClient.delete(ids);
+      setShowDeleteConfirm(false);
     });
-    setShowDeleteConfirm(false);
-  };
+  }
 
-  const totalSize = items.reduce((sum, i) => sum + i.size, 0);
+  async function emptyTrash() {
+    await runAction(async () => {
+      await trashClient.empty();
+      setShowEmptyConfirm(false);
+    });
+  }
+
+  async function runAction(action: () => Promise<void>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      setSelectedIds(new Set());
+      await refresh();
+    } catch (err) {
+      setError(toMsg(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="w-full h-full flex flex-col bg-ink-50 overflow-hidden">
-      {/* Toolbar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-ink-200 bg-ink-100">
         <div className="flex items-center gap-2">
           <Trash2 size={16} className="text-ink-600" />
@@ -124,24 +136,42 @@ export default function Trash() {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => void refresh()}
+            disabled={loading || busy}
+            className="flex items-center gap-1 px-3 py-1.5 rounded bg-ink-200 text-ink-700 text-body-sm hover:bg-ink-300 disabled:opacity-30 transition-colors"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh (刷新)
+          </button>
+          <button
             onClick={() => setShowRestoreConfirm(true)}
-            disabled={selectedIds.size === 0}
+            disabled={selectedIds.size === 0 || busy}
             className="flex items-center gap-1 px-3 py-1.5 rounded bg-ink-200 text-ink-700 text-body-sm hover:bg-ink-300 disabled:opacity-30 transition-colors"
           >
             <RotateCcw size={14} /> Restore (还原)
           </button>
           <button
             onClick={() => { if (selectedIds.size > 0) setShowDeleteConfirm(true); else setShowEmptyConfirm(true); }}
-            className="flex items-center gap-1 px-3 py-1.5 rounded bg-cinnabar text-white text-body-sm hover:bg-cinnabar-light transition-colors"
+            disabled={items.length === 0 || busy}
+            className="flex items-center gap-1 px-3 py-1.5 rounded bg-cinnabar text-white text-body-sm hover:bg-cinnabar-light disabled:opacity-30 transition-colors"
           >
             <Trash2 size={14} /> {selectedIds.size > 0 ? 'Delete (删除)' : 'Empty (清空)'}
           </button>
         </div>
       </div>
 
-      {/* Content */}
+      {error && (
+        <div className="m-3 rounded border border-red-300 bg-red-50 p-2 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto">
-        {items.length === 0 ? (
+        {loading && items.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full">
+            <RefreshCw size={32} className="text-ink-300 mb-3 animate-spin" />
+            <div className="text-body-sm text-ink-400">Loading trash (正在加载回收站)</div>
+          </div>
+        ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full">
             <Trash2 size={48} className="text-ink-300 mb-3" />
             <div className="text-heading-sm text-ink-400">Trash is empty (回收站为空)</div>
@@ -160,7 +190,7 @@ export default function Trash() {
                   />
                 </th>
                 <th className="px-4 py-2 font-medium">Name (名称)</th>
-                <th className="px-4 py-2 font-medium w-32">Original (原位置)</th>
+                <th className="px-4 py-2 font-medium w-64">Original (原位置)</th>
                 <th className="px-4 py-2 font-medium w-36">Deleted (删除时间)</th>
                 <th className="px-4 py-2 font-medium w-24">Size (大小)</th>
                 <th className="px-4 py-2 font-medium w-20">Age (天数)</th>
@@ -168,8 +198,9 @@ export default function Trash() {
             </thead>
             <tbody>
               {items.map(item => {
-                const age = daysSince(item.deletedAt);
+                const age = daysSince(item.deleted_at);
                 const isOld = age > 30;
+                const type = getItemType(item);
                 return (
                   <tr
                     key={item.id}
@@ -191,16 +222,16 @@ export default function Trash() {
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex items-center gap-2">
-                        {getFileIcon(item.type)}
-                        <span className="text-body-sm text-ink-700">{item.name}</span>
+                        {getFileIcon(type)}
+                        <span className="text-body-sm text-ink-700 truncate" title={item.original_path}>{item.name}</span>
                         {isOld && (
                           <span className="text-caption px-1.5 py-0.5 rounded bg-warning/10 text-warning">Old (旧)</span>
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-2 text-body-sm text-ink-500">{item.originalLocation}</td>
-                    <td className="px-4 py-2 text-body-sm text-ink-500">{formatDate(item.deletedAt)}</td>
-                    <td className="px-4 py-2 text-body-sm text-ink-500">{formatSize(item.size)}</td>
+                    <td className="px-4 py-2 text-body-sm text-ink-500 truncate" title={item.original_path}>{parentPath(item.original_path)}</td>
+                    <td className="px-4 py-2 text-body-sm text-ink-500">{formatDate(item.deleted_at)}</td>
+                    <td className="px-4 py-2 text-body-sm text-ink-500">{item.is_dir ? '--' : formatSize(item.size)}</td>
                     <td className="px-4 py-2 text-body-sm text-ink-500">{age} days</td>
                   </tr>
                 );
@@ -210,13 +241,11 @@ export default function Trash() {
         )}
       </div>
 
-      {/* Status Bar */}
       <div className="flex items-center justify-between px-4 py-1.5 border-t border-ink-200 bg-ink-100 text-caption text-ink-500">
         <span>{items.length} item(s) in trash (回收站中)</span>
         <span>{formatSize(totalSize)} total (总计)</span>
       </div>
 
-      {/* Empty Trash Confirmation */}
       {showEmptyConfirm && (
         <>
           <div className="fixed inset-0 z-40" style={{ backgroundColor: 'rgba(26,26,26,0.35)' }} onClick={() => setShowEmptyConfirm(false)} />
@@ -230,13 +259,12 @@ export default function Trash() {
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setShowEmptyConfirm(false)} className="px-4 py-2 rounded border border-ink-300 text-ink-700 text-body-sm hover:bg-ink-200">Cancel (取消)</button>
-              <button onClick={() => { permanentlyDelete(items.map(i => i.id)); setShowEmptyConfirm(false); }} className="px-4 py-2 rounded bg-cinnabar text-white text-body-sm hover:bg-cinnabar-light">Delete (删除)</button>
+              <button onClick={() => void emptyTrash()} disabled={busy} className="px-4 py-2 rounded bg-cinnabar text-white text-body-sm hover:bg-cinnabar-light disabled:opacity-30">Delete (删除)</button>
             </div>
           </div>
         </>
       )}
 
-      {/* Restore Confirmation */}
       {showRestoreConfirm && (
         <>
           <div className="fixed inset-0 z-40" style={{ backgroundColor: 'rgba(26,26,26,0.35)' }} onClick={() => setShowRestoreConfirm(false)} />
@@ -250,13 +278,12 @@ export default function Trash() {
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setShowRestoreConfirm(false)} className="px-4 py-2 rounded border border-ink-300 text-ink-700 text-body-sm hover:bg-ink-200">Cancel (取消)</button>
-              <button onClick={() => restoreItems(Array.from(selectedIds))} className="px-4 py-2 rounded bg-success text-white text-body-sm hover:bg-success/80">Restore (还原)</button>
+              <button onClick={() => void restoreItems(Array.from(selectedIds))} disabled={busy} className="px-4 py-2 rounded bg-success text-white text-body-sm hover:bg-success/80 disabled:opacity-30">Restore (还原)</button>
             </div>
           </div>
         </>
       )}
 
-      {/* Delete Confirmation */}
       {showDeleteConfirm && (
         <>
           <div className="fixed inset-0 z-40" style={{ backgroundColor: 'rgba(26,26,26,0.35)' }} onClick={() => setShowDeleteConfirm(false)} />
@@ -270,11 +297,22 @@ export default function Trash() {
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setShowDeleteConfirm(false)} className="px-4 py-2 rounded border border-ink-300 text-ink-700 text-body-sm hover:bg-ink-200">Cancel (取消)</button>
-              <button onClick={() => permanentlyDelete(Array.from(selectedIds))} className="px-4 py-2 rounded bg-cinnabar text-white text-body-sm hover:bg-cinnabar-light">Delete (删除)</button>
+              <button onClick={() => void permanentlyDelete(Array.from(selectedIds))} disabled={busy} className="px-4 py-2 rounded bg-cinnabar text-white text-body-sm hover:bg-cinnabar-light disabled:opacity-30">Delete (删除)</button>
             </div>
           </div>
         </>
       )}
     </div>
   );
+}
+
+function toMsg(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 403) return '权限不足';
+    if (e.status === 404) return '回收站项目不存在';
+    if (e.status === 409) return '原路径已经存在，未还原';
+    return e.body || `错误 ${e.status}`;
+  }
+  if (e instanceof Error) return e.message;
+  return String(e);
 }

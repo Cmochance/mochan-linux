@@ -4,6 +4,12 @@
 //   - auth.login.success / auth.login.fail / auth.logout
 //   - fs.write / fs.delete / fs.move / fs.upload
 //   - sys.kill
+//   - appstate.put / appstate.patch / appstate.delete
+//   - trash.move / trash.restore / trash.delete / trash.empty
+//   - download.create / download.cancel / download.retry / download.delete
+//   - apitester.run
+//   - rss.feed.add / rss.feed.delete / rss.feed.refresh / rss.refresh
+//   - rss.article.read / rss.article.star / rss.article.read_all
 //
 // Format: one JSON object per line. Append-only. Rotated to <file>.1 when
 // the active file exceeds maxFileBytes. We keep at most one rotation

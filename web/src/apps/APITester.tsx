@@ -1,9 +1,9 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import {
-  Send, Clock, FileJson, Trash2, Copy, Check, Plus, X,
-  ChevronRight, Globe, History, Bookmark
+  Send, Clock, Trash2, Copy, Check, Plus, X, History
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { apiTesterClient, type ApiTesterRunResponse } from '../lib/api-tester';
+import { appStateClient } from '../lib/app-state';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
 
@@ -30,6 +30,8 @@ interface ResponseData {
   body: string;
   time: number;
   size: number;
+  truncated: boolean;
+  error?: string;
 }
 
 const METHOD_COLORS: Record<HttpMethod, string> = {
@@ -43,59 +45,44 @@ const METHOD_COLORS: Record<HttpMethod, string> = {
 };
 
 const DEMO_ENDPOINTS: RequestEntry[] = [
-  { id: 'demo1', method: 'GET', url: 'https://api.ink-os.local/system/info', headers: [{ key: 'Accept', value: 'application/json', enabled: true }], body: '', timestamp: '', name: '系统信息 (System Info)' },
-  { id: 'demo2', method: 'GET', url: 'https://api.ink-os.local/apps/list', headers: [{ key: 'Accept', value: 'application/json', enabled: true }], body: '', timestamp: '', name: '应用列表 (App List)' },
-  { id: 'demo3', method: 'GET', url: 'https://api.ink-os.local/user/profile', headers: [{ key: 'Authorization', value: 'Bearer token123', enabled: true }, { key: 'Accept', value: 'application/json', enabled: true }], body: '', timestamp: '', name: '用户资料 (User Profile)' },
-  { id: 'demo4', method: 'POST', url: 'https://api.ink-os.local/notes', headers: [{ key: 'Content-Type', value: 'application/json', enabled: true }], body: '{\n  "title": "新笔记",\n  "content": "这是笔记内容..."\n}', timestamp: '', name: '创建笔记 (Create Note)' },
-  { id: 'demo5', method: 'PUT', url: 'https://api.ink-os.local/settings/theme', headers: [{ key: 'Content-Type', value: 'application/json', enabled: true }], body: '{\n  "theme": "dark",\n  "accentColor": "#b3392f"\n}', timestamp: '', name: '更新主题 (Update Theme)' },
-  { id: 'demo6', method: 'DELETE', url: 'https://api.ink-os.local/cache/clear', headers: [{ key: 'Authorization', value: 'Bearer admin-token', enabled: true }], body: '', timestamp: '', name: '清除缓存 (Clear Cache)' },
+  { id: 'demo1', method: 'GET', url: 'http://127.0.0.1:3001/healthz', headers: [{ key: 'Accept', value: 'text/plain', enabled: true }], body: '', timestamp: '', name: '本机健康检查 (Local Health)' },
+  { id: 'demo2', method: 'GET', url: 'https://httpbin.org/get', headers: [{ key: 'Accept', value: 'application/json', enabled: true }], body: '', timestamp: '', name: 'HTTPBin GET' },
+  { id: 'demo3', method: 'POST', url: 'https://httpbin.org/post', headers: [{ key: 'Content-Type', value: 'application/json', enabled: true }, { key: 'Accept', value: 'application/json', enabled: true }], body: '{\n  "name": "mochan-linux"\n}', timestamp: '', name: 'HTTPBin POST' },
 ];
 
-const DEMO_RESPONSES: Record<string, ResponseData> = {
-  'GET:https://api.ink-os.local/system/info': {
-    status: 200, statusText: 'OK',
-    headers: { 'Content-Type': 'application/json', 'X-Version': '1.3.0', 'Cache-Control': 'no-cache' },
-    body: JSON.stringify({ name: "Ink OS", version: "1.3.0", platform: "linux-x64", uptime: 86400, memory: { total: 16777216, used: 8388608, free: 8388608 }, cpu: { cores: 8, usage: 12.5 }, display: { resolution: "1920x1080", scale: 1 } }, null, 2),
-    time: 45, size: 320,
-  },
-  'GET:https://api.ink-os.local/apps/list': {
-    status: 200, statusText: 'OK',
-    headers: { 'Content-Type': 'application/json', 'X-Total-Count': '57' },
-    body: JSON.stringify({ apps: [{ id: "terminal", name: "终端", category: "system", version: "1.0" }, { id: "calendar", name: "日历", category: "system", version: "1.2" }, { id: "gogame", name: "围棋", category: "games", version: "1.0" }, { id: "markdowneditor", name: "Markdown编辑器", category: "office", version: "1.1" }, { id: "calculator", name: "计算器", category: "system", version: "1.0" }], total: 57 }, null, 2),
-    time: 78, size: 480,
-  },
-  'GET:https://api.ink-os.local/user/profile': {
-    status: 200, statusText: 'OK',
-    headers: { 'Content-Type': 'application/json', 'X-User-Id': '550e8400' },
-    body: JSON.stringify({ id: "550e8400-e29b-41d4-a716-446655440000", username: "moshui", displayName: "墨白", email: "moshui@ink-os.cn", avatar: "/avatars/moshui.png", roles: ["admin", "developer"], preferences: { theme: "ink-wash", language: "zh-CN", notifications: true } }, null, 2),
-    time: 62, size: 420,
-  },
-  'POST:https://api.ink-os.local/notes': {
-    status: 201, statusText: 'Created',
-    headers: { 'Content-Type': 'application/json', 'Location': '/notes/note-123' },
-    body: JSON.stringify({ id: "note-123", title: "新笔记", content: "这是笔记内容...", createdAt: "2024-03-15T10:30:00Z", updatedAt: "2024-03-15T10:30:00Z" }, null, 2),
-    time: 95, size: 220,
-  },
-  'PUT:https://api.ink-os.local/settings/theme': {
-    status: 200, statusText: 'OK',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ success: true, theme: "dark", accentColor: "#b3392f", appliedAt: "2024-03-15T10:30:00Z" }, null, 2),
-    time: 38, size: 120,
-  },
-  'DELETE:https://api.ink-os.local/cache/clear': {
-    status: 204, statusText: 'No Content',
-    headers: { 'X-Cache-Cleared': 'true' },
-    body: '',
-    time: 120, size: 0,
-  },
-};
-
 const COMMON_HEADERS = ['Accept', 'Authorization', 'Content-Type', 'User-Agent', 'Cache-Control', 'X-API-Key', 'Origin', 'Referer'];
+const APP_STATE_ID = 'apitester';
+
+interface APITesterState {
+  history: RequestEntry[];
+}
+
+function mapResponse(result: ApiTesterRunResponse): ResponseData {
+  return {
+    status: result.status,
+    statusText: result.status_text || (result.error ? 'Request Error' : ''),
+    headers: result.headers || {},
+    body: result.body || '',
+    time: result.time_ms || 0,
+    size: result.size || 0,
+    truncated: result.truncated,
+    error: result.error,
+  };
+}
+
+function requestName(method: HttpMethod, rawURL: string): string {
+  try {
+    const parsed = new URL(rawURL);
+    return `${method} ${parsed.pathname || '/'}`;
+  } catch {
+    return `${method} ${rawURL}`;
+  }
+}
 
 export default function APITester() {
   const [method, setMethod] = useState<HttpMethod>('GET');
-  const [url, setUrl] = useState('https://api.ink-os.local/system/info');
-  const [headers, setHeaders] = useState<Header[]>([{ key: 'Accept', value: 'application/json', enabled: true }]);
+  const [url, setUrl] = useState(DEMO_ENDPOINTS[0].url);
+  const [headers, setHeaders] = useState<Header[]>(DEMO_ENDPOINTS[0].headers.map((h) => ({ ...h })));
   const [body, setBody] = useState('');
   const [activeTab, setActiveTab] = useState<'params' | 'headers' | 'body'>('headers');
   const [responseTab, setResponseTab] = useState<'body' | 'headers'>('body');
@@ -108,6 +95,7 @@ export default function APITester() {
   const bodyView = useMemo(() => {
     if (!response) return '';
     if (responseTab === 'headers') return '';
+    if (response.error) return response.error;
     try {
       const parsed = JSON.parse(response.body);
       return JSON.stringify(parsed, null, 2);
@@ -116,42 +104,66 @@ export default function APITester() {
     }
   }, [response, responseTab]);
 
+  useEffect(() => {
+    let mounted = true;
+    appStateClient.getOrDefault<APITesterState>(APP_STATE_ID, { history: [] })
+      .then((state) => {
+        if (mounted && Array.isArray(state.history)) {
+          setHistory(state.history.slice(0, 50));
+        }
+      })
+      .catch(() => {
+        if (mounted) setHistory([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const persistHistory = useCallback((next: RequestEntry[]) => {
+    setHistory(next);
+    void appStateClient.put<APITesterState>(APP_STATE_ID, { history: next });
+  }, []);
+
   const handleSend = useCallback(async () => {
     setLoading(true);
-    const startTime = Date.now();
+    try {
+      const result = await apiTesterClient.run({
+        method,
+        url,
+        headers: headers.map((h) => ({ ...h })),
+        body,
+        timeout_ms: 15000,
+      });
+      setResponse(mapResponse(result));
 
-    // Simulate network delay
-    await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
-
-    const key = `${method}:${url}`;
-    let resp = DEMO_RESPONSES[key];
-
-    if (!resp) {
-      // Generic fallback response
-      resp = {
-        status: 200,
-        statusText: 'OK',
-        headers: { 'Content-Type': 'application/json', 'X-Simulated': 'true' },
-        body: JSON.stringify({ message: "模拟响应", url, method, timestamp: new Date().toISOString(), note: "这是模拟的API响应 (This is a simulated API response)" }, null, 2),
-        time: Date.now() - startTime,
-        size: 200,
+      const entry: RequestEntry = {
+        id: Date.now().toString(),
+        method,
+        url,
+        headers: headers.map((h) => ({ ...h })),
+        body,
+        timestamp: new Date().toLocaleTimeString(),
+        name: requestName(method, url),
       };
+      const nextHistory = [entry, ...history].slice(0, 50);
+      persistHistory(nextHistory);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setResponse({
+        status: 0,
+        statusText: 'Request Error',
+        headers: {},
+        body: '',
+        time: 0,
+        size: 0,
+        truncated: false,
+        error: message,
+      });
+    } finally {
+      setLoading(false);
     }
-
-    setResponse(resp);
-    setLoading(false);
-
-    const entry: RequestEntry = {
-      id: Date.now().toString(),
-      method,
-      url,
-      headers: [...headers],
-      body,
-      timestamp: new Date().toLocaleTimeString(),
-      name: `${method} ${new URL(url.startsWith('http') ? url : 'http://' + url).pathname}`,
-    };
-    setHistory(prev => [entry, ...prev].slice(0, 50));
-  }, [method, url, headers, body]);
+  }, [method, url, headers, body, history, persistHistory]);
 
   const addHeader = useCallback(() => {
     setHeaders(prev => [...prev, { key: '', value: '', enabled: true }]);
@@ -174,12 +186,13 @@ export default function APITester() {
 
   const copyResponse = useCallback(() => {
     if (!response) return;
-    navigator.clipboard.writeText(response.body);
+    navigator.clipboard.writeText(response.error || response.body);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }, [response]);
 
   const getStatusColor = (status: number) => {
+    if (status === 0) return 'var(--cinnabar)';
     if (status < 300) return 'var(--success)';
     if (status < 400) return 'var(--info)';
     if (status < 500) return 'var(--warning)';
@@ -325,11 +338,12 @@ export default function APITester() {
             <>
               {/* Response summary */}
               <div className="flex items-center gap-4 px-4 py-2 border-b" style={{ borderColor: 'var(--ink-200)', backgroundColor: 'var(--ink-100)' }}>
-                <span className="text-heading-sm font-medium" style={{ color: getStatusColor(response.status) }}>{response.status}</span>
+                <span className="text-heading-sm font-medium" style={{ color: getStatusColor(response.status) }}>{response.status || 'ERR'}</span>
                 <span className="text-body-sm" style={{ color: 'var(--ink-600)' }}>{response.statusText}</span>
                 <div className="w-px h-4" style={{ backgroundColor: 'var(--ink-300)' }} />
                 <span className="flex items-center gap-1 text-caption" style={{ color: 'var(--ink-600)' }}><Clock size={10} /> {response.time}ms</span>
                 <span className="text-caption" style={{ color: 'var(--ink-600)' }}>{response.size > 1024 ? `${(response.size / 1024).toFixed(1)} KB` : `${response.size} B`}</span>
+                {response.truncated && <span className="text-caption" style={{ color: 'var(--warning)' }}>已截断</span>}
                 <div className="flex-1" />
                 <div className="flex gap-1">
                   {(['body', 'headers'] as const).map(tab => (
@@ -354,11 +368,20 @@ export default function APITester() {
               {/* Response content */}
               <div className="flex-1 overflow-auto p-3" style={{ backgroundColor: 'var(--ink-50)' }}>
                 {responseTab === 'body' ? (
-                  <pre
-                    className="text-body-sm font-mono"
-                    style={{ fontFamily: 'var(--font-code)', fontSize: '13px', lineHeight: 1.6, color: 'var(--ink-700)' }}
-                    dangerouslySetInnerHTML={{ __html: syntaxHighlight(bodyView) }}
-                  />
+                  response.error ? (
+                    <pre
+                      className="text-body-sm font-mono whitespace-pre-wrap"
+                      style={{ fontFamily: 'var(--font-code)', fontSize: '13px', lineHeight: 1.6, color: 'var(--cinnabar)' }}
+                    >
+                      {response.error}
+                    </pre>
+                  ) : (
+                    <pre
+                      className="text-body-sm font-mono"
+                      style={{ fontFamily: 'var(--font-code)', fontSize: '13px', lineHeight: 1.6, color: 'var(--ink-700)' }}
+                      dangerouslySetInnerHTML={{ __html: syntaxHighlight(bodyView) }}
+                    />
+                  )
                 ) : (
                   <table className="w-full">
                     <tbody>
@@ -390,7 +413,7 @@ export default function APITester() {
               <History size={12} className="inline mr-1" />历史 (History)
             </span>
             {history.length > 0 && (
-              <button onClick={() => setHistory([])} className="p-0.5"><Trash2 size={10} style={{ color: 'var(--ink-400)' }} /></button>
+              <button onClick={() => persistHistory([])} className="p-0.5"><Trash2 size={10} style={{ color: 'var(--ink-400)' }} /></button>
             )}
           </div>
 

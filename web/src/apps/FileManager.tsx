@@ -31,6 +31,7 @@ import {
   type FsListResponse,
 } from '@/lib/fs';
 import { ApiError } from '@/lib/api';
+import { trashClient } from '@/lib/trash';
 import { CodeEditor } from '@/components/CodeEditor';
 import { openFileInApp } from '@/lib/openFile';
 
@@ -155,11 +156,11 @@ export default function FileManager() {
 
   async function doDelete(e: FsEntry) {
     const ok = window.confirm(
-      `确认删除 ${e.is_dir ? '目录' : '文件'} ${e.name}?\n${e.is_dir ? '所有子内容会一并删除。' : ''}`,
+      `确认将 ${e.is_dir ? '目录' : '文件'} ${e.name} 移入回收站?\n可以从回收站还原或永久删除。`,
     );
     if (!ok) return;
     try {
-      await fsClient.remove(e.path, e.is_dir);
+      await trashClient.move(e.path);
       if (listing) void load(listing.path);
     } catch (err) {
       setError(toMsg(err));

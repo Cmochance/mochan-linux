@@ -38,6 +38,10 @@ export const fsClient = {
     return apiJSON<FsReadResponse>(`/api/fs/read?path=${encodeURIComponent(path)}`);
   },
 
+  async stat(path: string): Promise<FsEntry> {
+    return apiJSON<FsEntry>(`/api/fs/stat?path=${encodeURIComponent(path)}`);
+  },
+
   async write(path: string, content: string): Promise<FsEntry> {
     return apiJSON<FsEntry>('/api/fs/write', {
       method: 'POST',
@@ -76,6 +80,19 @@ export const fsClient = {
     const res = await apiFetch('/api/fs/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new ApiError(res.status, await res.text());
     return res.json();
+  },
+
+  async uploadFileToPath(path: string, blob: Blob, type?: string): Promise<FsEntry> {
+    const normalized = path.replace(/\/+$/, '');
+    const slash = normalized.lastIndexOf('/');
+    if (!normalized.startsWith('/') || slash <= 0 || slash === normalized.length - 1) {
+      throw new Error('path must be an absolute file path');
+    }
+    const dir = normalized.slice(0, slash) || '/';
+    const name = normalized.slice(slash + 1);
+    const file = new File([blob], name, { type: type || blob.type || 'application/octet-stream' });
+    const result = await this.upload(dir, [file]);
+    return result.saved.find((entry) => entry.path === normalized || entry.name === name) ?? result.saved[0];
   },
 };
 
