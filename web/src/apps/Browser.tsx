@@ -94,6 +94,84 @@ const MOCK_SEARCH_RESULTS = [
 
 let tabCounter = 0;
 
+const BROWSER_PROXY_PATH = '/api/browser/proxy';
+
+function httpHost(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.host;
+    }
+  } catch {
+    return '';
+  }
+  return url.replace(/^https?:\/\//, '').split('/')[0];
+}
+
+function shouldUseSimulatedPage(url: string): boolean {
+  if (url === HOME_URL || url.startsWith('ink://')) return true;
+  return Boolean(SIMULATED_SITES[httpHost(url)]);
+}
+
+function titleForURL(url: string): string {
+  const preset = PRESET_SITES[url]?.title;
+  if (preset) return preset;
+  const host = httpHost(url);
+  return SIMULATED_SITES[host]?.title || host || url;
+}
+
+function browserProxyURL(url: string): string {
+  return `${BROWSER_PROXY_PATH}?url=${encodeURIComponent(url)}`;
+}
+
+function ServerBrowserPage({ url, onFrameNavigate }: { url: string; onFrameNavigate: (url: string) => void }) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [loaded, setLoaded] = useState(false);
+  const src = browserProxyURL(url);
+
+  useEffect(() => {
+    setLoaded(false);
+  }, [src]);
+
+  const handleLoad = () => {
+    setLoaded(true);
+    try {
+      const frameHref = frameRef.current?.contentWindow?.location.href;
+      if (!frameHref) return;
+      const current = new URL(frameHref, window.location.origin);
+      if (current.pathname !== BROWSER_PROXY_PATH) return;
+      const nextURL = current.searchParams.get('url');
+      if (nextURL && nextURL !== url) {
+        onFrameNavigate(nextURL);
+      }
+    } catch {
+      // Cross-origin access should not happen because the iframe stays on this origin.
+    }
+  };
+
+  return (
+    <div className="relative w-full h-full" style={{ backgroundColor: 'var(--ink-50)' }}>
+      {!loaded && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3" style={{ backgroundColor: 'var(--ink-50)' }}>
+          <div className="w-48 h-3 rounded animate-pulse" style={{ backgroundColor: 'var(--ink-200)' }} />
+          <div className="w-36 h-3 rounded animate-pulse" style={{ backgroundColor: 'var(--ink-200)' }} />
+          <div className="w-56 h-3 rounded animate-pulse" style={{ backgroundColor: 'var(--ink-200)' }} />
+        </div>
+      )}
+      <iframe
+        key={src}
+        ref={frameRef}
+        src={src}
+        title={titleForURL(url)}
+        sandbox="allow-same-origin"
+        onLoad={handleLoad}
+        className="w-full h-full border-0"
+        style={{ backgroundColor: 'white' }}
+      />
+    </div>
+  );
+}
+
 function SimulatedPage({ url, onNavigate }: { url: string; onNavigate: (url: string) => void }) {
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -465,7 +543,7 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
         if (t.id !== targetId) return t;
         const newHistory = t.history.slice(0, t.historyIndex + 1);
         newHistory.push(url);
-        const title = PRESET_SITES[url]?.title || SIMULATED_SITES[url.replace(/^https?:\/\//, '').split('/')[0]]?.title || url;
+        const title = titleForURL(url);
         return {
           ...t,
           url,
@@ -477,6 +555,25 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
       setHistory(prev => [{ url, title: url, timestamp: new Date() }, ...prev].slice(0, 100));
       setIsLoading(false);
     }, 300);
+  }, [activeTabId]);
+
+  const syncFrameNavigation = useCallback((url: string) => {
+    setTabs(prev => prev.map(t => {
+      if (t.id !== activeTabId || t.url === url) return t;
+      const newHistory = t.history.slice(0, t.historyIndex + 1);
+      newHistory.push(url);
+      return {
+        ...t,
+        url,
+        title: titleForURL(url),
+        history: newHistory,
+        historyIndex: newHistory.length - 1,
+      };
+    }));
+    setHistory(prev => {
+      if (prev[0]?.url === url) return prev;
+      return [{ url, title: titleForURL(url), timestamp: new Date() }, ...prev].slice(0, 100);
+    });
   }, [activeTabId]);
 
   const canGoBack = activeTab?.historyIndex > 0;
@@ -642,8 +739,10 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
               <div className="w-36 h-3 rounded animate-pulse" style={{ backgroundColor: 'var(--ink-200)' }} />
               <div className="w-56 h-3 rounded animate-pulse" style={{ backgroundColor: 'var(--ink-200)' }} />
             </div>
-          ) : (
+          ) : shouldUseSimulatedPage(activeTab?.url || HOME_URL) ? (
             <SimulatedPage url={activeTab?.url || HOME_URL} onNavigate={(url) => navigateTo(url)} />
+          ) : (
+            <ServerBrowserPage url={activeTab?.url || HOME_URL} onFrameNavigate={syncFrameNavigation} />
           )}
         </div>
 
@@ -707,7 +806,9 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
         </div>
         <div className="flex items-center gap-3">
           <Lock size={10} style={{ color: 'var(--success)' }} />
-          <span className="text-caption" style={{ color: 'var(--ink-400)' }}>HTTPS</span>
+          <span className="text-caption" style={{ color: 'var(--ink-400)' }}>
+            {(activeTab?.url || '').startsWith('http://') ? 'HTTP' : (activeTab?.url || '').startsWith('https://') ? 'HTTPS' : 'LOCAL'}
+          </span>
           <span className="text-caption" style={{ color: 'var(--ink-400)' }}>100%</span>
         </div>
       </div>

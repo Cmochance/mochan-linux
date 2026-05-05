@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-05-04
+
+First stable release. The browser-as-Linux-desktop concept hits feature
+parity with the original goal: a single Go binary deployed behind a
+reverse proxy, login-gated, exposing the host machine's terminal,
+filesystem, processes and metrics through a water-ink themed React
+desktop. Reachable from any device including mobile.
+
+This release does not add new code beyond v0.9.0 — it is a stability
+marker, README polish, and CHANGELOG audit. Future minor releases
+(`v1.x`) ship feature work; patches (`v1.0.x`) ship fixes.
+
+### What is in v1.0.0
+
+| Layer | Capability |
+|---|---|
+| Auth | bcrypt + JWT in HttpOnly cookie, login screen gate, logout endpoint, audit on `auth.login.{success,fail}` and `auth.logout` |
+| Terminal | WebSocket ↔ creack/pty bridge, xterm.js front-end, persistent named sessions with 256 KiB ring buffer, auto-reconnect with jittered backoff, 5-minute idle reaper |
+| Filesystem | `/api/fs/*` REST (list/read/write/mkdir/move/delete/upload/download/stat) running as the OS user, no chroot, perms enforced by the host kernel |
+| Editor | CodeMirror 6 with extension-driven language detection (JS/TS/JSON/Python/Go/HTML/CSS/Markdown/YAML, …) |
+| System | `/api/sys/{stat,processes,kill}` powered by gopsutil, real-time SystemMonitor and TaskManager apps |
+| Audit | JSONL append-only log at `<DataDir>/audit.log` with rotation, AuditLog viewer app with filters and rolling counters |
+| Settings | Server-side persisted theme / language / wallpaper, wallpaper bucket on disk with upload + delete |
+| Inter-app | FileManager double-click routes by extension to MarkdownEditor / ImageViewer / TextEditor; apps load + save via `/api/fs` |
+| Mobile | Below 768 px viewport: every window is fullscreen between StatusBar and Dock, drag/resize disabled, traffic-light buttons enlarged, Dock scrolls horizontally |
+| Distribution | Single binary with `embed.FS`-injected frontend, multi-arch (amd64 + arm64) GitHub Actions release on every `v*` tag, consolidated SHA256SUMS file |
+
+### What is intentionally out of scope
+
+- **Multi-user.** This is a single-user system by design.
+- **Listen-port toggle in UI.** Editing `/etc/mochan/config.env` + a
+  `systemctl restart mochan` is the right interface for that.
+- **Password rotation in UI.** Same constraint.
+- **2FA / OAuth / SSO.** Single password is the only auth.
+- **Built-in IPS / fail2ban.** Audit is for the forensic trail; rate
+  limiting and IP blocking belong in the reverse proxy.
+- **Cross-restart PTY persistence.** Sessions die with the server
+  process; tmux remains the right answer.
+- **PWA / offline mode.** No service worker, no installable manifest.
+
+### Versioning policy from here
+
+- `v1.x.0` (minor): backward-compatible feature work.
+- `v1.0.x` (patch): bug fixes, security fixes, no API change.
+- `v2.0.0` would only be triggered by an intentional break (e.g. shifting
+  away from single-user) — not planned at the moment.
+
 ## [0.9.0] — 2026-05-04
 
 Phase 8 — real Settings page backed by server persistence + wallpaper bucket.
