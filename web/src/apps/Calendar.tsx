@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
-import { ChevronLeft, ChevronRight, CalendarDays, Plus, Trash2, X } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { ChevronLeft, ChevronRight, CalendarDays, Plus, Trash2, X, Download, Upload } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 interface CalendarEvent {
   id: string;
@@ -11,6 +12,11 @@ interface CalendarEvent {
 }
 
 const EVENTS_KEY = 'ink-os-calendar-events';
+const CALENDAR_APP_ID = 'calendar';
+
+interface CalendarState {
+  events: CalendarEvent[];
+}
 
 const LUNAR_DAYS = ['初一', '初二', '初三', '初四', '初五', '初六', '初七', '初八', '初九', '初十',
   '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十',
@@ -40,8 +46,86 @@ function loadEvents(): CalendarEvent[] {
   ];
 }
 
-function saveEvents(events: CalendarEvent[]) {
-  localStorage.setItem(EVENTS_KEY, JSON.stringify(events));
+function escapeICS(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,');
+}
+
+function unescapeICS(value: string): string {
+  return value
+    .replace(/\\n/gi, '\n')
+    .replace(/\\,/g, ',')
+    .replace(/\\;/g, ';')
+    .replace(/\\\\/g, '\\');
+}
+
+function formatICSDate(date: string, time?: string): string {
+  const compactDate = date.replace(/-/g, '');
+  if (!time) return compactDate;
+  return `${compactDate}T${time.replace(':', '')}00`;
+}
+
+function parseICSDate(value: string): { date: string; time?: string } | null {
+  const compact = value.trim();
+  if (compact.length < 8) return null;
+  const date = `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`;
+  if (compact.includes('T') && compact.length >= 13) {
+    return { date, time: `${compact.slice(9, 11)}:${compact.slice(11, 13)}` };
+  }
+  return { date };
+}
+
+function eventsToICS(events: CalendarEvent[]): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//mochan-linux//Calendar//EN'];
+  events.forEach(evt => {
+    lines.push('BEGIN:VEVENT');
+    lines.push(`UID:${escapeICS(evt.id)}@mochan-linux`);
+    lines.push(`DTSTAMP:${stamp}`);
+    lines.push(`DTSTART:${formatICSDate(evt.date, evt.time)}`);
+    lines.push(`SUMMARY:${escapeICS(evt.title)}`);
+    if (evt.description) lines.push(`DESCRIPTION:${escapeICS(evt.description)}`);
+    lines.push(`CATEGORIES:${evt.type}`);
+    lines.push('END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+  return `${lines.join('\r\n')}\r\n`;
+}
+
+function parseICSEvents(text: string): CalendarEvent[] {
+  const unfolded = text.replace(/\r?\n[ \t]/g, '');
+  const chunks = unfolded.match(/BEGIN:VEVENT[\s\S]*?END:VEVENT/g) ?? [];
+  const events: CalendarEvent[] = [];
+  chunks.forEach((chunk, index) => {
+    const data: Record<string, string> = {};
+    chunk.split(/\r?\n/).forEach(line => {
+      const colon = line.indexOf(':');
+      if (colon < 0) return;
+      const key = line.slice(0, colon).split(';')[0].toUpperCase();
+      data[key] = line.slice(colon + 1);
+    });
+    const parsedDate = parseICSDate(data.DTSTART || '');
+    if (!parsedDate || !data.SUMMARY) return;
+    const category = (data.CATEGORIES || '').toLowerCase();
+    const type: CalendarEvent['type'] = category.includes('work')
+      ? 'work'
+      : category.includes('holiday')
+        ? 'holiday'
+        : 'personal';
+    const event: CalendarEvent = {
+      id: `evt_ics_${Date.now()}_${index}`,
+      date: parsedDate.date,
+      title: unescapeICS(data.SUMMARY),
+      description: unescapeICS(data.DESCRIPTION || ''),
+      type,
+    };
+    if (parsedDate.time) event.time = parsedDate.time;
+    events.push(event);
+  });
+  return events;
 }
 
 function getDaysInMonth(year: number, month: number): number {
@@ -74,8 +158,38 @@ export default function Calendar() {
   const [eventDesc, setEventDesc] = useState('');
   const [eventType, setEventType] = useState<'work' | 'personal' | 'holiday'>('personal');
   const [eventTime, setEventTime] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const importRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { saveEvents(events); }, [events]);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback = { events: loadEvents() };
+        const state = await appStateClient.getOrDefault<CalendarState>(CALENDAR_APP_ID, fallback);
+        if (cancelled) return;
+        setEvents(Array.isArray(state.events) ? state.events : fallback.events);
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<CalendarState>(CALENDAR_APP_ID, { events })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [events, loaded]);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -135,6 +249,28 @@ export default function Calendar() {
     if (editingEvent?.id === id) setShowDialog(false);
   };
 
+  const exportICS = () => {
+    const blob = new Blob([eventsToICS(events)], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mochan-calendar.ics';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importICS = async (file: File | null) => {
+    if (!file) return;
+    const text = await file.text();
+    const imported = parseICSEvents(text);
+    if (imported.length > 0) {
+      setEvents(prev => [...prev, ...imported]);
+      setSelectedDate(imported[0].date);
+      setCurrentDate(new Date(imported[0].date + 'T00:00:00'));
+    }
+    if (importRef.current) importRef.current.value = '';
+  };
+
   const monthNames = [
     'January (一月)', 'February (二月)', 'March (三月)', 'April (四月)', 'May (五月)', 'June (六月)',
     'July (七月)', 'August (八月)', 'September (九月)', 'October (十月)', 'November (十一月)', 'December (十二月)',
@@ -165,6 +301,25 @@ export default function Calendar() {
             Today (今天)
           </button>
           <button
+            onClick={() => importRef.current?.click()}
+            className="flex items-center gap-1 px-3 py-1 rounded bg-ink-200 text-ink-700 text-body-sm hover:bg-ink-300 transition-colors"
+          >
+            <Upload size={14} /> Import
+          </button>
+          <button
+            onClick={exportICS}
+            className="flex items-center gap-1 px-3 py-1 rounded bg-ink-200 text-ink-700 text-body-sm hover:bg-ink-300 transition-colors"
+          >
+            <Download size={14} /> Export
+          </button>
+          <input
+            ref={importRef}
+            type="file"
+            accept=".ics,text/calendar"
+            className="hidden"
+            onChange={e => importICS(e.target.files?.[0] ?? null)}
+          />
+          <button
             onClick={openAddDialog}
             className="flex items-center gap-1 px-3 py-1 rounded bg-ink-800 text-ink-50 text-body-sm hover:bg-ink-900 transition-colors"
           >
@@ -172,6 +327,11 @@ export default function Calendar() {
           </button>
         </div>
       </div>
+      {syncError && (
+        <div className="px-4 py-1 text-caption" style={{ color: 'var(--error)', backgroundColor: 'rgba(179,57,47,0.08)' }}>
+          {syncError}
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {/* Calendar Grid */}

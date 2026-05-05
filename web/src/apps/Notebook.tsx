@@ -4,6 +4,7 @@ import {
   Bold, Italic, Underline, Heading1, Heading2, List, ListOrdered,
   Quote, Code, Strikethrough, Clock, ChevronLeft, X, Check
 } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 /* ─────────────── types ─────────────── */
 
@@ -32,10 +33,16 @@ const NOTEBOOK_COLORS = [
   "#7a5a3a", "#6a5a7a", "#8a7a4a", "#4a6a8a"
 ];
 
-/* ─────────────── localStorage keys ─────────────── */
+/* ─────────────── persistence keys ─────────────── */
 
 const LS_NOTEBOOKS = "inkos_nb_notebooks";
 const LS_NOTES = "inkos_nb_notes";
+const NOTEBOOK_APP_ID = "notebook";
+
+interface NotebookState {
+  notebooks: Notebook[];
+  notes: Note[];
+}
 
 const DEFAULT_NOTEBOOKS: Notebook[] = [
   { id: "nb-1", name: "学习笔记 (Study)", color: "#2d2d2d" },
@@ -100,17 +107,29 @@ function execFormat(cmd: string, val?: string) {
   document.execCommand(cmd, false, val);
 }
 
+function loadLocalNotebooks(): Notebook[] {
+  try {
+    const saved = localStorage.getItem(LS_NOTEBOOKS);
+    return saved ? JSON.parse(saved) : DEFAULT_NOTEBOOKS;
+  } catch {
+    return DEFAULT_NOTEBOOKS;
+  }
+}
+
+function loadLocalNotes(): Note[] {
+  try {
+    const saved = localStorage.getItem(LS_NOTES);
+    return saved ? JSON.parse(saved) : DEFAULT_NOTES;
+  } catch {
+    return DEFAULT_NOTES;
+  }
+}
+
 /* ─────────────── main component ─────────────── */
 
 export default function Notebook() {
-  const [notebooks, setNotebooks] = useState<Notebook[]>(() => {
-    try { const s = localStorage.getItem(LS_NOTEBOOKS); return s ? JSON.parse(s) : DEFAULT_NOTEBOOKS; }
-    catch { return DEFAULT_NOTEBOOKS; }
-  });
-  const [notes, setNotes] = useState<Note[]>(() => {
-    try { const s = localStorage.getItem(LS_NOTES); return s ? JSON.parse(s) : DEFAULT_NOTES; }
-    catch { return DEFAULT_NOTES; }
-  });
+  const [notebooks, setNotebooks] = useState<Notebook[]>(loadLocalNotebooks);
+  const [notes, setNotes] = useState<Note[]>(loadLocalNotes);
 
   const [selectedNotebookId, setSelectedNotebookId] = useState<string>(notebooks[0]?.id || "");
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
@@ -125,15 +144,48 @@ export default function Notebook() {
   const [editTags, setEditTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
   const [savedIndicator, setSavedIndicator] = useState(false);
+  const [editorRevision, setEditorRevision] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // New notebook dialog
   const [showNewNb, setShowNewNb] = useState(false);
   const [newNbName, setNewNbName] = useState("");
   const [newNbColor, setNewNbColor] = useState(NOTEBOOK_COLORS[0]);
 
-  // Persist
-  useEffect(() => { localStorage.setItem(LS_NOTEBOOKS, JSON.stringify(notebooks)); }, [notebooks]);
-  useEffect(() => { localStorage.setItem(LS_NOTES, JSON.stringify(notes)); }, [notes]);
+  // Server-backed persistence with a one-time localStorage migration fallback.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback = { notebooks: loadLocalNotebooks(), notes: loadLocalNotes() };
+        const state = await appStateClient.getOrDefault<NotebookState>(NOTEBOOK_APP_ID, fallback);
+        const nextNotebooks = Array.isArray(state.notebooks) && state.notebooks.length > 0 ? state.notebooks : fallback.notebooks;
+        const nextNotes = Array.isArray(state.notes) ? state.notes : fallback.notes;
+        if (cancelled) return;
+        setNotebooks(nextNotebooks);
+        setNotes(nextNotes);
+        setSelectedNotebookId(nextNotebooks[0]?.id || "");
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<NotebookState>(NOTEBOOK_APP_ID, { notebooks, notes })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [notebooks, notes, loaded]);
 
   // Auto-save
   useEffect(() => {
@@ -146,9 +198,15 @@ export default function Notebook() {
       }
     }, 3000);
     return () => clearTimeout(timer);
-  }, [editTitle, editTags, selectedNoteId]);
+  }, [editTitle, editTags, selectedNoteId, editorRevision]);
 
   const selectedNote = useMemo(() => notes.find(n => n.id === selectedNoteId) || null, [notes, selectedNoteId]);
+
+  useEffect(() => {
+    if (editorRef.current && selectedNote) {
+      editorRef.current.innerHTML = selectedNote.content;
+    }
+  }, [selectedNoteId]);
 
   const filteredNotes = useMemo(() => {
     return notes
@@ -178,6 +236,7 @@ export default function Notebook() {
       setSelectedNoteId(noteId);
       setEditTitle(note.title);
       setEditTags(note.tags);
+      setEditorRevision(0);
       setShowMobileList(false);
       // Focus editor after a tick
       setTimeout(() => {
@@ -201,8 +260,17 @@ export default function Notebook() {
       updatedAt: Date.now(),
     };
     setNotes(prev => [newNote, ...prev]);
-    selectNote(newNote.id);
-  }, [selectedNotebookId, selectNote]);
+    setSelectedNoteId(newNote.id);
+    setEditTitle(newNote.title);
+    setEditTags([]);
+    setEditorRevision(0);
+    setShowMobileList(false);
+    setTimeout(() => {
+      if (editorRef.current) {
+        editorRef.current.innerHTML = "";
+      }
+    }, 0);
+  }, [selectedNotebookId]);
 
   const createNotebook = useCallback(() => {
     if (!newNbName.trim()) return;
@@ -294,6 +362,11 @@ export default function Notebook() {
             <Plus size={14} style={{ color: "var(--ink-600)" }} />
           </button>
         </div>
+        {syncError && (
+          <div className="mx-3 mt-2 px-2 py-1 rounded text-caption" style={{ color: "var(--error)", backgroundColor: "rgba(179,57,47,0.08)" }}>
+            {syncError}
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto py-1">
           {notebooks.map(nb => {
@@ -598,6 +671,7 @@ export default function Notebook() {
                   lineHeight: "1.8",
                   fontFamily: "'Noto Sans SC', sans-serif",
                 }}
+                onInput={() => setEditorRevision(v => v + 1)}
                 onBlur={() => {
                   if (editorRef.current && selectedNoteId) {
                     const content = editorRef.current.innerHTML;

@@ -3,6 +3,7 @@ import {
   Send, Smile, Search, Phone, Video, MoreVertical, CheckCheck,
   Circle, Image
 } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 type OnlineStatus = 'online' | 'away' | 'offline';
 
@@ -28,6 +29,12 @@ interface Contact {
 interface ChatAppProps {
   windowId?: string;
 }
+
+interface ChatState {
+  contacts: Contact[];
+}
+
+const CHAT_STATE_APP_ID = 'chatapp';
 
 const EMOJIS = ['😀', '😂', '🥰', '😎', '🤔', '👍', '👏', '🙏', '❤️', '🔥',
   '🎉', '✨', '🌟', '💯', '🤗', '😊', '🤩', '😋', '🌸', '🍀',
@@ -113,6 +120,8 @@ export default function ChatApp({ windowId: _windowId }: ChatAppProps) {
   const [showEmoji, setShowEmoji] = useState(false);
   const [typingContactId, setTypingContactId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -121,6 +130,36 @@ export default function ChatApp({ windowId: _windowId }: ChatAppProps) {
   const filteredContacts = contacts.filter(c =>
     c.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const state = await appStateClient.getOrDefault<ChatState>(CHAT_STATE_APP_ID, { contacts: INITIAL_CONTACTS });
+        const nextContacts = Array.isArray(state.contacts) && state.contacts.length > 0 ? state.contacts : INITIAL_CONTACTS;
+        if (cancelled) return;
+        setContacts(nextContacts);
+        setSelectedContactId(nextContacts[0]?.id || '');
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<ChatState>(CHAT_STATE_APP_ID, { contacts })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [contacts, loaded]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -134,16 +173,6 @@ export default function ChatApp({ windowId: _windowId }: ChatAppProps) {
       inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + 'px';
     }
   }, [inputValue]);
-
-  // Simulate typing indicator
-  useEffect(() => {
-    if (!selectedContact) return;
-    const timer = setTimeout(() => {
-      setTypingContactId(selectedContact.id);
-      setTimeout(() => setTypingContactId(null), 2000);
-    }, 5000);
-    return () => clearTimeout(timer);
-  }, [selectedContactId, selectedContact?.messages]);
 
   const sendMessage = useCallback(() => {
     if (!inputValue.trim() || !selectedContact) return;
@@ -168,33 +197,6 @@ export default function ChatApp({ windowId: _windowId }: ChatAppProps) {
 
     setInputValue('');
     if (inputRef.current) inputRef.current.style.height = 'auto';
-
-    // Simulate reply after 2-4 seconds
-    const replyDelay = 2000 + Math.random() * 2000;
-    setTimeout(() => {
-      const replies = [
-        '说得真好！', '有意思，请继续。', '我也这么想。', '哈哈，确实如此。',
-        '受教了。', '妙哉！', '此言甚是有理。', '妙笔生花！',
-      ];
-      const replyContent = replies[Math.floor(Math.random() * replies.length)];
-      const replyMsg: Message = {
-        id: `msg-${Date.now()}-reply`,
-        content: replyContent,
-        sender: 'them',
-        timestamp: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-        type: 'text',
-      };
-      setContacts(prev => prev.map(c => {
-        if (c.id !== selectedContactId) return c;
-        return {
-          ...c,
-          messages: [...c.messages, replyMsg],
-          lastMessage: replyContent,
-          lastTime: replyMsg.timestamp,
-          unread: c.unread + 1,
-        };
-      }));
-    }, replyDelay);
   }, [inputValue, selectedContactId, selectedContact]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -208,6 +210,7 @@ export default function ChatApp({ windowId: _windowId }: ChatAppProps) {
     setSelectedContactId(id);
     setContacts(prev => prev.map(c => c.id === id ? { ...c, unread: 0 } : c));
     setShowEmoji(false);
+    setTypingContactId(null);
   };
 
   const insertEmoji = (emoji: string) => {
@@ -236,6 +239,11 @@ export default function ChatApp({ windowId: _windowId }: ChatAppProps) {
               style={{ color: 'var(--ink-700)' }}
             />
           </div>
+          {syncError && (
+            <div className="mt-2 text-caption px-2 py-1 rounded" style={{ color: 'var(--error)', backgroundColor: 'rgba(179,57,47,0.08)' }}>
+              {syncError}
+            </div>
+          )}
         </div>
 
         {/* Contacts */}

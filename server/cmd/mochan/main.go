@@ -34,6 +34,7 @@ import (
 	"github.com/alysechen/mochan-linux/server/internal/filetransfer"
 	"github.com/alysechen/mochan-linux/server/internal/fsapi"
 	"github.com/alysechen/mochan-linux/server/internal/gitclient"
+	"github.com/alysechen/mochan-linux/server/internal/mailclient"
 	"github.com/alysechen/mochan-linux/server/internal/pty"
 	"github.com/alysechen/mochan-linux/server/internal/rss"
 	"github.com/alysechen/mochan-linux/server/internal/settings"
@@ -184,6 +185,7 @@ func runServer() error {
 	}
 	weatherHandler := weather.NewHandler(weatherCache, auditLog)
 	fileTransferHandler := filetransfer.NewHandler(auditLog)
+	mailHandler := mailclient.NewHandler(auditLog)
 
 	staticFS, err := static.FS()
 	if err != nil {
@@ -215,6 +217,7 @@ func runServer() error {
 			p.Route("/file-transfer", fileTransferHandler.Mount)
 			p.Route("/fs", fsapi.New(auditLog).Mount)
 			p.Route("/git", gitHandler.Mount)
+			p.Route("/mail", mailHandler.Mount)
 			p.Route("/rss", rssHandler.Mount)
 			p.Route("/trash", trashHandler.Mount)
 			p.Route("/weather", weatherHandler.Mount)

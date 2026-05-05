@@ -18,6 +18,8 @@
 //   - bookmarks.bookmark.add / bookmarks.bookmark.update / bookmarks.bookmark.delete
 //   - bookmarks.folder.add / bookmarks.folder.delete / bookmarks.import
 //   - weather.search / weather.forecast
+//   - mail.connect / mail.imap.list / mail.imap.messages / mail.imap.message
+//   - mail.smtp.send
 //
 // Format: one JSON object per line. Append-only. Rotated to <file>.1 when
 // the active file exceeds maxFileBytes. We keep at most one rotation

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Plus, Search, Pin, Trash2, X } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 interface Note {
   id: string;
@@ -12,6 +13,11 @@ interface Note {
 }
 
 const NOTES_KEY = 'ink-os-sticky-notes';
+const NOTES_APP_ID = 'notes';
+
+interface NotesState {
+  notes: Note[];
+}
 
 const NOTE_COLORS = [
   { id: 'parchment', name: 'Parchment (宣纸)', bg: '#f0ebe4', header: '#e8e4df' },
@@ -30,10 +36,6 @@ function loadNotes(): Note[] {
   } catch { return []; }
 }
 
-function saveNotes(notes: Note[]) {
-  localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
-}
-
 export default function Notes() {
   const [notes, setNotes] = useState<Note[]>(loadNotes);
   const [searchQuery, setSearchQuery] = useState('');
@@ -41,8 +43,37 @@ export default function Notes() {
   const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
   const [editColor, setEditColor] = useState('parchment');
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
-  useEffect(() => { saveNotes(notes); }, [notes]);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback = { notes: loadNotes() };
+        const state = await appStateClient.getOrDefault<NotesState>(NOTES_APP_ID, fallback);
+        if (cancelled) return;
+        setNotes(Array.isArray(state.notes) ? state.notes : fallback.notes);
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<NotesState>(NOTES_APP_ID, { notes })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [notes, loaded]);
 
   const createNote = () => {
     const newNote: Note = {
@@ -116,6 +147,11 @@ export default function Notes() {
               className="bg-transparent border-none outline-none text-body-sm text-ink-700 w-full placeholder:text-ink-400"
             />
           </div>
+          {syncError && (
+            <span className="text-caption px-2 py-1 rounded" style={{ color: 'var(--error)', backgroundColor: 'rgba(179,57,47,0.08)' }}>
+              {syncError}
+            </span>
+          )}
         </div>
         <button
           onClick={createNote}

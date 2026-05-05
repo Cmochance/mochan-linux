@@ -32,6 +32,11 @@ Already server-backed enough to exclude from the missing-backend queue:
 - FTP Client: `/api/file-transfer` provides SFTP-over-SSH style listing, mkdir, delete, upload, and download between the server filesystem and a remote host; credentials are held only in browser state for the current session.
 - Bookmarks: `/api/bookmarks` persists folders and bookmarks server-side; Browser star/bookmark actions and the Bookmarks app share the same store.
 - Weather: `/api/weather` searches locations and fetches cached Open-Meteo forecasts from the backend.
+- Email Client: `/api/mail` performs real session-only IMAP folder/message reads and SMTP sends. Mail credentials are supplied per request and are not persisted.
+- Chat App: `/api/app-state` app ID `chatapp` persists the selected Option A single-user message notebook.
+- Notes: `/api/app-state` app ID `notes` persists sticky notes server-side after one-time localStorage migration fallback.
+- Calendar: `/api/app-state` app ID `calendar` persists events server-side; `.ics` import/export reads and writes the same event state.
+- Notebook: `/api/app-state` app ID `notebook` persists notebooks, rich notes, tags, starred state, and archive state after one-time localStorage migration fallback.
 
 Partially server-backed and still in scope:
 
@@ -58,11 +63,11 @@ Partially server-backed and still in scope:
 - [x] P8 FTP Client: real SFTP/FTP file transfer.
 - [x] P9 Bookmarks: persistent bookmark store integrated with Browser.
 - [x] P10 Weather: real weather provider and server cache.
-- [ ] P11 Email Client: real IMAP/SMTP account support.
-- [ ] P12 Chat App: define and implement real messaging scope.
-- [ ] P13 Notes: server-backed notes.
-- [ ] P14 Calendar: server-backed events.
-- [ ] P15 Notebook: server-backed notebooks and rich notes.
+- [x] P11 Email Client: real IMAP/SMTP account support.
+- [x] P12 Chat App: define and implement real messaging scope.
+- [x] P13 Notes: server-backed notes.
+- [x] P14 Calendar: server-backed events.
+- [x] P15 Notebook: server-backed notebooks and rich notes.
 - [ ] P16 Spreadsheet: server-backed workbook files.
 - [ ] P17 Mind Map: server-backed mind-map documents.
 - [ ] P18 Presentation: server-backed slide documents.
@@ -275,6 +280,10 @@ Security prerequisite:
 
 - Decide whether credentials are session-only or stored on disk. Do not implement stored mail credentials without an explicit encryption and rotation plan.
 
+Implementation note:
+
+- P11 uses `/api/mail` with session-only IMAP/SMTP credentials. The backend supports connect validation, folder listing, message summaries, message body fetch, attachment metadata, and SMTP send with optional server-file attachments. Credentials, message bodies, request headers, and attachment content are not written to app-state or audit detail.
+
 ### P12 Chat App
 
 Scope decision required before implementation:
@@ -287,6 +296,10 @@ Default recommendation:
 
 - Implement only Option A or defer until the product direction is clear.
 
+Implementation note:
+
+- P12 chose Option A: a local single-user message notebook with server persistence. The app no longer generates fake automatic replies; user-authored messages and thread state are stored through `/api/app-state` under app ID `chatapp`.
+
 ### P13 Notes
 
 Target behavior:
@@ -294,6 +307,10 @@ Target behavior:
 - Replace `localStorage` with server-backed CRUD.
 - Keep pinned/color/search behavior.
 - Optional export to plain files under a notes directory.
+
+Implementation note:
+
+- P13 stores sticky notes through `/api/app-state` under app ID `notes`. Existing browser-local notes are used only as the first fallback when no server state exists.
 
 ### P14 Calendar
 
@@ -303,12 +320,20 @@ Target behavior:
 - Import/export `.ics`.
 - Optional reminder scheduling later.
 
+Implementation note:
+
+- P14 stores calendar events through `/api/app-state` under app ID `calendar`. Import and export use `.ics` files in the browser, then persist the normalized event list server-side.
+
 ### P15 Notebook
 
 Target behavior:
 
 - Server-backed notebooks, notes, tags, archived state, and rich text content.
 - Migration path from `localStorage`.
+
+Implementation note:
+
+- P15 stores notebooks and rich notes through `/api/app-state` under app ID `notebook`. Existing localStorage notebooks and notes are used as a migration fallback when no server document exists.
 
 ### P16 Spreadsheet
 
@@ -491,6 +516,11 @@ For production updates, follow the repository's Git-backed workflow:
 - 2026-05-06: Completed P8 by adding `server/internal/filetransfer` and mounting authenticated `/api/file-transfer`. The FTP Client now uses SFTP-over-SSH style backend operations for remote list, mkdir, delete, upload, and download; plain FTP remains disabled.
 - 2026-05-06: Completed P9 by adding `server/internal/bookmarks` and mounting authenticated `/api/bookmarks`. The Bookmarks app and Browser star/bookmark UI now share one server-side bookmark/folder store.
 - 2026-05-06: Completed P10 by adding `server/internal/weather` and mounting authenticated `/api/weather`. Weather search and forecasts now come from backend Open-Meteo calls with a 15-minute coordinate cache and no frontend provider key.
+- 2026-05-06: Completed P11 by adding `server/internal/mailclient` and mounting authenticated `/api/mail`. Email Client now connects to real IMAP accounts for folders, message summaries, and message bodies, and sends mail through SMTP. Mail credentials remain session-only and are not written to server state.
+- 2026-05-06: Completed P12 by selecting the documented default Option A for Chat App. Chat threads and messages are now persisted through app-state under `chatapp`, and the previous random fake reply behavior was removed.
+- 2026-05-06: Completed P13 by migrating Notes from browser-local save behavior to app-state under `notes`, preserving pinned, color, search, edit, and delete behavior with one-time localStorage fallback.
+- 2026-05-06: Completed P14 by migrating Calendar events to app-state under `calendar` and adding `.ics` import/export over the same server-backed event list.
+- 2026-05-06: Completed P15 by migrating Notebook notebooks, rich notes, tags, starred state, and archived state to app-state under `notebook`, with localStorage used only as a migration fallback.
 
 ## Validation Results
 
@@ -514,23 +544,25 @@ For production updates, follow the repository's Git-backed workflow:
 - 2026-05-06: P6-P10 cumulative backend validation passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go test ./...` after rerunning outside the sandbox because existing `httptest` suites must bind loopback listeners.
 - 2026-05-06: P6-P10 cumulative backend vet passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go vet ./...`.
 - 2026-05-06: P6-P10 frontend and embedded binary validation passed with `GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache make build VERSION="1.0.0+p6-p10"`; the existing Vite large chunk warning remains.
+- 2026-05-06: P11 targeted backend validation passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go test ./internal/mailclient ./cmd/mochan`.
+- 2026-05-06: P11-P15 frontend validation passed with `cd web && npm run build`; the existing Vite large chunk warning remains.
+- 2026-05-06: P11-P15 cumulative backend vet passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go vet ./...`.
+- 2026-05-06: P11-P15 cumulative backend validation passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go test ./...` after rerunning outside the sandbox because existing `httptest` suites must bind loopback listeners.
+- 2026-05-06: P11-P15 frontend embedding and binary validation passed with `GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache make build VERSION="1.0.0+p11-p15"`; the existing Vite large chunk warning remains.
 
-## Next Implementation Plan: P11 Email Client
+## Next Implementation Plan: P16 Spreadsheet
 
-P11 should make Email Client real only after credential handling is explicit. Do not implement stored mail credentials without encryption and rotation design.
+P16 should make Spreadsheet documents server-backed while keeping the existing client-side calculation behavior for this first pass.
 
 Proposed implementation order:
 
-1. Inspect `web/src/apps/EmailClient.tsx` to map current inbox, folder, compose, send, attachment, and account behaviors.
-2. Choose the first credential mode. Default safe mode is session-only IMAP/SMTP credentials, matching SSH and SFTP, with no backend persistence.
-3. Add a backend package for IMAP folder/message listing and SMTP send. Keep account credentials out of app-state and audit details.
-4. Implement read-only IMAP first: connect test, folder list, message list, message body fetch, and attachment metadata.
-5. Add SMTP send after read-only behavior is validated, including recipient validation and size caps for attachments.
-6. Connect attachments to the server filesystem through `/api/fs` or an app-specific temporary upload area.
-7. Add Go tests with fake protocol boundaries where possible, and validate the frontend with `npm run build`.
+1. Inspect `web/src/apps/Spreadsheet.tsx` to identify workbook shape, current local state, import/export behavior, and formula recalculation boundaries.
+2. Store workbook documents through `/api/app-state` if the app has a single current workbook, or use `/api/fs`/an app-specific document path if multiple named workbook files are already part of the UI.
+3. Preserve formula calculation in the frontend; do not introduce a backend calculation engine in this phase.
+4. Keep import/export behavior compatible with the current JSON or CSV surface, then persist imported workbook state server-side.
+5. Validate with `npm run build`; run backend tests only if a new server endpoint is added.
 
 ## Blockers And Open Decisions
 
-- Need product decision before implementing Email Client and Chat App because these require explicit credential and trust-boundary choices.
 - Need decide whether generic app state should be one shared API or app-specific APIs. Default recommendation is shared state API for low-risk local-only apps, app-specific APIs for network/protocol/media apps.
 - Need decide where app-generated user files should live under `DataDir` versus the real Linux home directory.
