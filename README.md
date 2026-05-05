@@ -24,6 +24,7 @@ mochan-linux 是一个**自托管的、浏览器即可访问的 Linux 工作站*
 
 - **登录门**：bcrypt 密码 + HS256 JWT，写入 `HttpOnly Secure SameSite=Lax` cookie；前端 `AuthGate` 启动时调 `/api/me` 校验，失败显示水墨风登录屏，**未登录看不到桌面任何内容**。
 - **真终端**：浏览器内 xterm.js 经 WebSocket 接到服务器侧 `creack/pty` 打开的 `bash -l`，支持 256 色、UTF-8、`htop` / `vim` / `tmux` 全部能跑，窗口缩放自动 `TIOCSWINSZ`。
+- **服务器侧浏览器**：桌面里的浏览器应用通过 `/api/browser/proxy?url=...` 由 VPS 后端发起 HTTP/HTTPS 请求，可访问服务器本机 `127.0.0.1` 和服务器内网可达地址；页面脚本默认禁用，HTML 链接、图片、样式会改写回同一个代理路径。
 - **真文件系统**：`/api/fs/{home,list,read,write,mkdir,delete,move,upload,download,stat}`，整个主机 FS 可见，权限由 OS 决定（mochan 用户访问 `/root` → 403；访问 `/etc/hostname` → 200 文本）。FileManager 支持双击文本进 CodeMirror 6 编辑、上传 / 下载 / 重命名 / 软链显示。
 - **代码编辑器**：CodeMirror 6 + `one-dark` 主题，按扩展名识别 JS / TS / JSON / Python / HTML / CSS / Markdown / YAML 自动语法高亮。
 - **系统监控**：`/api/sys/stat` 由 gopsutil 后端，每 2 秒前端轮询。CPU 总占用 + 每核占用、内存 / Swap、所有挂载点磁盘、网络累积 + 实时速率。
@@ -75,6 +76,7 @@ sha256sum -c <(grep mochan-linux-amd64.tar.gz SHA256SUMS)
 
 - 单用户单密码 ≥ 16 字符。**爆破防护极弱**——`/api/auth/login` 仅做 500 ms 固定延时，强烈建议在反向代理层加 `fail2ban` 或 IP 白名单。
 - 必须 HTTPS。后端默认绑 `127.0.0.1:38421`（或反代在 Docker 里时绑 `172.17.0.1:38421`），**永远不要把 38421 直接暴到公网**。
+- 浏览器应用是服务器侧代理。已登录用户可以让 VPS 请求公网、`127.0.0.1` 和内网 HTTP 服务；后端会拦截 link-local 和常见云 metadata 地址，但不要把账号开放给不完全可信的人。
 - `MOCHAN_JWT_SECRET` ≥ 32 字节随机；用 `mochan gen-secret` 生成；泄露立即轮换。
 - 服务用户必须**非 root**（默认 `mochan`）。NOPASSWD sudo 只在你确实需要从浏览器装包时给。
 - `unattended-upgrades`、SSH key-only、root 禁登都按 Linux 加固常规来。
@@ -124,6 +126,8 @@ ssh root@your.vps "bash /tmp/install.sh --binary /tmp/mochan"
 ```bash
 # 前端 dev server (port 3000) 自动代理 /api 和 /ws 到本地 38421
 cd web && npm install && npm run dev
+# 如果后端临时跑在其他端口，可设置：
+# MOCHAN_DEV_TARGET=http://127.0.0.1:38422 npm run dev
 
 # 后端 dev server (port 38421) 用临时凭据
 bash scripts/dev.sh
@@ -141,6 +145,7 @@ mochan-linux/
 │   ├── cmd/mochan/         入口 + CLI 子命令（run / hash-password / gen-secret / version）
 │   └── internal/
 │       ├── auth/           bcrypt + JWT 中间件
+│       ├── browser/        /api/browser/proxy 服务器侧网页代理
 │       ├── pty/            /ws/pty WebSocket ↔ PTY
 │       ├── fsapi/          /api/fs/*
 │       ├── sysinfo/        /api/sys/*

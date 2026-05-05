@@ -25,6 +25,7 @@ import (
 
 	"github.com/alysechen/mochan-linux/server/internal/audit"
 	"github.com/alysechen/mochan-linux/server/internal/auth"
+	"github.com/alysechen/mochan-linux/server/internal/browser"
 	"github.com/alysechen/mochan-linux/server/internal/config"
 	"github.com/alysechen/mochan-linux/server/internal/fsapi"
 	"github.com/alysechen/mochan-linux/server/internal/pty"
@@ -159,6 +160,7 @@ func runServer() error {
 		api.Group(func(p chi.Router) {
 			p.Use(authn.Middleware)
 			p.Get("/me", meHandler)
+			p.Route("/browser", browser.New().Mount)
 			p.Route("/fs", fsapi.New(auditLog).Mount)
 			p.Route("/sys", func(sr chi.Router) {
 				sysinfo.New(auditLog).Mount(sr)
