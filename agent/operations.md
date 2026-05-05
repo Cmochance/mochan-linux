@@ -17,6 +17,7 @@ git pull --ff-only origin main
 short="$(git rev-parse --short HEAD)"
 make build VERSION="1.0.0+$short"
 install -m 0755 bin/mochan /usr/local/bin/mochan
+git restore --worktree server/internal/static/dist/index.html
 systemctl restart mochan.service
 systemctl is-active mochan.service
 curl -fsS http://172.17.0.1:38421/healthz
