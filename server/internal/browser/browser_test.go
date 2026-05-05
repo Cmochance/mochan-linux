@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/alysechen/mochan-linux/server/internal/netguard"
 )
 
 func TestRewriteHTMLRoutesLinksThroughProxy(t *testing.T) {
@@ -36,7 +38,7 @@ func TestBlockedAddrBlocksMetadataAndLinkLocal(t *testing.T) {
 	blocked := []string{"169.254.169.254", "169.254.1.2", "100.100.100.200", "fd00:ec2::254", "fe80::1"}
 	for _, raw := range blocked {
 		addr := netip.MustParseAddr(raw)
-		if !blockedAddr(addr) {
+		if !netguard.BlockedAddr(addr) {
 			t.Fatalf("expected %s to be blocked", raw)
 		}
 	}
@@ -44,7 +46,7 @@ func TestBlockedAddrBlocksMetadataAndLinkLocal(t *testing.T) {
 	allowed := []string{"127.0.0.1", "10.0.0.1", "192.168.1.20", "8.8.8.8", "::1"}
 	for _, raw := range allowed {
 		addr := netip.MustParseAddr(raw)
-		if blockedAddr(addr) {
+		if netguard.BlockedAddr(addr) {
 			t.Fatalf("expected %s to be allowed", raw)
 		}
 	}

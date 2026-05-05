@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   ZoomIn, ZoomOut, RotateCcw, RotateCw, FlipHorizontal, FlipVertical,
-  Upload, Download, Trash2, Play, Pause, ChevronLeft, ChevronRight, Image
+  Upload, Download, Trash2, Play, Pause, ChevronLeft, ChevronRight, Image, FolderOpen, Save
 } from 'lucide-react';
 import { fsClient } from '@/lib/fs';
 import { usePayloadPath, basename } from '@/lib/openFile';
@@ -15,6 +15,7 @@ interface ImageFile {
   height: number;
   size: number;
   type: string;
+  serverPath?: string;
 }
 
 function formatFileSize(bytes: number): string {
@@ -31,62 +32,75 @@ export default function ImageViewer({ windowId }: { windowId?: string }) {
   const remotePath = usePayloadPath(windowId);
   const [images, setImages] = useState<ImageFile[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [homePath, setHomePath] = useState('/');
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // FileManager double-click → preload the remote image as the first entry.
-  useEffect(() => {
-    if (!remotePath) return;
-    let alive = true;
-    const url = fsClient.downloadURL(remotePath);
-    const probe = new window.Image();
-    probe.onload = () => {
-      if (!alive) return;
-      const id = generateId();
-      const name = basename(remotePath);
-      const ext = (name.split('.').pop() || '').toLowerCase();
-      const mime =
-        ext === 'png' ? 'image/png' :
-        ext === 'gif' ? 'image/gif' :
-        ext === 'webp' ? 'image/webp' :
-        ext === 'svg' ? 'image/svg+xml' :
-        ext === 'bmp' ? 'image/bmp' :
-        ext === 'avif' ? 'image/avif' :
-        ext === 'ico' ? 'image/x-icon' :
-        'image/jpeg';
-      const synthetic = new File([new Blob([], { type: mime })], name, { type: mime });
-      const entry: ImageFile = {
-        id,
-        file: synthetic,
-        url,
-        name,
-        width: probe.naturalWidth,
-        height: probe.naturalHeight,
-        size: 0,
-        type: mime,
+  const loadRemoteImage = useCallback(async (path: string, replace = false) => {
+    setStatus('加载服务器图片');
+    setError(null);
+    const url = fsClient.downloadURL(path);
+    const name = basename(path);
+    const mime = mimeFromName(name);
+    let size = 0;
+    try {
+      const stat = await fsClient.stat(path);
+      size = stat.size;
+    } catch {
+      size = 0;
+    }
+    const entry = await new Promise<ImageFile>((resolve, reject) => {
+      const probe = new window.Image();
+      probe.onload = () => {
+        const synthetic = new File([new Blob([], { type: mime })], name, { type: mime });
+        resolve({
+          id: generateId(),
+          file: synthetic,
+          url,
+          name,
+          width: probe.naturalWidth,
+          height: probe.naturalHeight,
+          size,
+          type: mime,
+          serverPath: path,
+        });
       };
-      setImages([entry]);
-      setCurrentIndex(0);
-    };
-    probe.onerror = () => {
-      if (!alive) return;
-      // Fall back to inserting a placeholder so the user sees the failure
-      // state instead of the empty drop-zone.
-      const synthetic = new File([new Blob([])], basename(remotePath));
-      setImages([{
-        id: generateId(),
-        file: synthetic,
-        url,
-        name: basename(remotePath),
-        width: 0,
-        height: 0,
-        size: 0,
-        type: 'application/octet-stream',
-      }]);
-    };
-    probe.src = url;
+      probe.onerror = () => reject(new Error('无法加载服务器图片'));
+      probe.src = url;
+    });
+    setImages((prev) => {
+      const next = replace ? [entry] : [...prev, entry];
+      setCurrentIndex(replace ? 0 : next.length - 1);
+      return next;
+    });
+    setStatus(null);
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void fsClient.home().then((home) => {
+      if (alive) setHomePath(home);
+    }).catch(() => {
+      if (alive) setHomePath('/');
+    });
     return () => {
       alive = false;
     };
-  }, [remotePath]);
+  }, []);
+
+  // FileManager double-click -> preload the remote image as the first entry.
+  useEffect(() => {
+    if (!remotePath) return;
+    let alive = true;
+    void loadRemoteImage(remotePath, true).catch((err) => {
+      if (!alive) return;
+      setError(err instanceof Error ? err.message : String(err));
+      setStatus(null);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [loadRemoteImage, remotePath]);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [flipH, setFlipH] = useState(false);
@@ -122,6 +136,7 @@ export default function ImageViewer({ windowId }: { windowId?: string }) {
           size: file.size,
           type: file.type || 'image/unknown',
         }]);
+        setError(null);
       };
       img.src = url;
     });
@@ -200,32 +215,91 @@ export default function ImageViewer({ windowId }: { windowId?: string }) {
     }
   };
 
-  const handleDownload = () => {
+  const renderCurrentImageBlob = useCallback(async (): Promise<{ blob: Blob; type: string }> => {
+    if (!currentImage) throw new Error('没有可保存的图片');
+    const type = exportMime(currentImage.type);
+    return new Promise((resolve, reject) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('无法创建画布'));
+        return;
+      }
+
+      const img = new window.Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const rad = (rotation * Math.PI) / 180;
+        const sin = Math.abs(Math.sin(rad));
+        const cos = Math.abs(Math.cos(rad));
+        canvas.width = img.naturalWidth * cos + img.naturalHeight * sin;
+        canvas.height = img.naturalWidth * sin + img.naturalHeight * cos;
+
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.rotate(rad);
+        ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+        ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+        canvas.toBlob((blob) => {
+          if (blob) resolve({ blob, type });
+          else reject(new Error('图片导出失败'));
+        }, type);
+      };
+      img.onerror = () => reject(new Error('图片加载失败'));
+      img.src = currentImage.url;
+    });
+  }, [currentImage, flipH, flipV, rotation]);
+
+  const handleDownload = async () => {
     if (!currentImage) return;
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const img = new window.Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const rad = (rotation * Math.PI) / 180;
-      const sin = Math.abs(Math.sin(rad));
-      const cos = Math.abs(Math.cos(rad));
-      canvas.width = img.naturalWidth * cos + img.naturalHeight * sin;
-      canvas.height = img.naturalWidth * sin + img.naturalHeight * cos;
-
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.rotate(rad);
-      ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
-      ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
-
+    try {
+      const { blob, type } = await renderCurrentImageBlob();
+      const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.download = `edited_${currentImage.name}`;
-      link.href = canvas.toDataURL(currentImage.type);
+      link.download = exportName(currentImage.name, type);
+      link.href = url;
       link.click();
-    };
-    img.src = currentImage.url;
+      URL.revokeObjectURL(url);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleOpenServerImage = async () => {
+    const path = promptServerPath('打开服务器图片', `${homePath.replace(/\/+$/, '')}/image.png`);
+    if (!path) return;
+    try {
+      await loadRemoteImage(path);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setStatus(null);
+    }
+  };
+
+  const handleSaveToServer = async () => {
+    if (!currentImage) return;
+    const suggested = currentImage.serverPath
+      ? siblingExportPath(currentImage.serverPath, currentImage.type)
+      : `${homePath.replace(/\/+$/, '')}/${exportName(currentImage.name, currentImage.type)}`;
+    const path = promptServerPath('保存图片到服务器路径', suggested);
+    if (!path) return;
+    setStatus('保存图片到服务器');
+    setError(null);
+    try {
+      const { blob, type } = await renderCurrentImageBlob();
+      const saved = await fsClient.uploadFileToPath(path, blob, type);
+      setImages((prev) => prev.map((image, index) => index === currentIndex ? {
+        ...image,
+        name: saved.name,
+        size: saved.size,
+        type,
+        serverPath: saved.path,
+      } : image));
+      setStatus(null);
+    } catch (err) {
+      setStatus(null);
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   // Wheel zoom
@@ -259,6 +333,13 @@ export default function ImageViewer({ windowId }: { windowId?: string }) {
           style={{ backgroundColor: 'var(--ink-700)', color: 'var(--ink-50)' }}
         >
           选择图片 (Select Images)
+        </button>
+        <button
+          onClick={() => void handleOpenServerImage()}
+          className="mt-3 px-6 py-2 rounded text-body-md transition-all duration-75 hover:scale-[1.02]"
+          style={{ backgroundColor: 'var(--ink-700)', color: 'var(--ink-50)' }}
+        >
+          打开服务器图片 (Open Server Image)
         </button>
         <input
           ref={fileInputRef}
@@ -299,6 +380,9 @@ export default function ImageViewer({ windowId }: { windowId?: string }) {
       >
         <button onClick={() => fileInputRef.current?.click()} className="p-1.5 rounded transition-all duration-75" style={{ color: 'var(--ink-400)' }} title="打开 (Open)">
           <Upload size={16} />
+        </button>
+        <button onClick={() => void handleOpenServerImage()} className="p-1.5 rounded transition-all duration-75" style={{ color: 'var(--ink-400)' }} title="打开服务器图片 (Open Server Image)">
+          <FolderOpen size={16} />
         </button>
         <div className="w-px h-4 mx-1" style={{ backgroundColor: 'var(--ink-600)' }} />
         <button onClick={() => setZoom(z => Math.min(5, z + 0.25))} className="p-1.5 rounded transition-all duration-75" style={{ color: 'var(--ink-400)' }} title="放大 (Zoom In)">
@@ -347,7 +431,10 @@ export default function ImageViewer({ windowId }: { windowId?: string }) {
           </select>
         )}
         <div className="flex-1" />
-        <button onClick={handleDownload} className="p-1.5 rounded transition-all duration-75" style={{ color: 'var(--ink-400)' }} title="下载 (Download)">
+        <button onClick={() => void handleSaveToServer()} className="p-1.5 rounded transition-all duration-75" style={{ color: 'var(--ink-400)' }} title="保存到服务器 (Save to Server)">
+          <Save size={16} />
+        </button>
+        <button onClick={() => void handleDownload()} className="p-1.5 rounded transition-all duration-75" style={{ color: 'var(--ink-400)' }} title="下载本地副本 (Download)">
           <Download size={16} />
         </button>
         <button onClick={handleDelete} className="p-1.5 rounded transition-all duration-75" style={{ color: 'var(--cinnabar)' }} title="删除 (Delete)">
@@ -422,6 +509,7 @@ export default function ImageViewer({ windowId }: { windowId?: string }) {
         <span className="truncate max-w-[200px]">{currentImage?.name}</span>
         <span>{currentImage ? `${currentImage.width} x ${currentImage.height}` : ''}</span>
         <span>{currentImage ? formatFileSize(currentImage.size) : ''}</span>
+        <span className="truncate max-w-[280px]" title={error ?? status ?? currentImage?.serverPath ?? ''}>{error ?? status ?? currentImage?.serverPath ?? ''}</span>
         <span>{images.length > 0 ? `${currentIndex + 1} / ${images.length}` : ''}</span>
       </div>
 
@@ -454,4 +542,45 @@ export default function ImageViewer({ windowId }: { windowId?: string }) {
       )}
     </div>
   );
+}
+
+function mimeFromName(name: string): string {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if (ext === 'png') return 'image/png';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'svg') return 'image/svg+xml';
+  if (ext === 'bmp') return 'image/bmp';
+  if (ext === 'avif') return 'image/avif';
+  if (ext === 'ico') return 'image/x-icon';
+  return 'image/jpeg';
+}
+
+function exportMime(type: string): string {
+  return type === 'image/jpeg' || type === 'image/png' || type === 'image/webp' ? type : 'image/png';
+}
+
+function exportName(name: string, type: string): string {
+  const base = name.replace(/\.[^/.]+$/, '') || 'image';
+  const ext = type === 'image/jpeg' ? 'jpg' : type === 'image/webp' ? 'webp' : 'png';
+  return `edited_${base}.${ext}`;
+}
+
+function siblingExportPath(path: string, type: string): string {
+  const slash = path.lastIndexOf('/');
+  const dir = slash > 0 ? path.slice(0, slash) : '/';
+  const name = slash >= 0 ? path.slice(slash + 1) : path;
+  return `${dir}/${exportName(name, type)}`;
+}
+
+function promptServerPath(title: string, suggestedPath: string): string | null {
+  const input = window.prompt(`${title}\n请输入服务器绝对路径。`, suggestedPath);
+  if (input == null) return null;
+  const path = input.trim();
+  if (!path) return null;
+  if (!path.startsWith('/')) {
+    window.alert('请输入以 / 开头的服务器绝对路径。');
+    return null;
+  }
+  return path;
 }

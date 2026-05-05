@@ -23,15 +23,20 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
 
+	"github.com/alysechen/mochan-linux/server/internal/apitester"
+	"github.com/alysechen/mochan-linux/server/internal/appstate"
 	"github.com/alysechen/mochan-linux/server/internal/audit"
 	"github.com/alysechen/mochan-linux/server/internal/auth"
 	"github.com/alysechen/mochan-linux/server/internal/browser"
 	"github.com/alysechen/mochan-linux/server/internal/config"
+	"github.com/alysechen/mochan-linux/server/internal/downloads"
 	"github.com/alysechen/mochan-linux/server/internal/fsapi"
 	"github.com/alysechen/mochan-linux/server/internal/pty"
+	"github.com/alysechen/mochan-linux/server/internal/rss"
 	"github.com/alysechen/mochan-linux/server/internal/settings"
 	"github.com/alysechen/mochan-linux/server/internal/static"
 	"github.com/alysechen/mochan-linux/server/internal/sysinfo"
+	"github.com/alysechen/mochan-linux/server/internal/trash"
 )
 
 var version = "0.1.0-dev"
@@ -137,6 +142,27 @@ func runServer() error {
 		return fmt.Errorf("wallpaper bucket: %w", err)
 	}
 	settingsHandler := settings.NewHandler(settingsStore, wallpaperBucket)
+	appStateStore, err := appstate.NewStore(filepath.Join(cfg.DataDir, "apps"))
+	if err != nil {
+		return fmt.Errorf("app state store: %w", err)
+	}
+	appStateHandler := appstate.NewHandler(appStateStore, auditLog)
+	trashStore, err := trash.NewStore(filepath.Join(cfg.DataDir, "trash"))
+	if err != nil {
+		return fmt.Errorf("trash store: %w", err)
+	}
+	trashHandler := trash.NewHandler(trashStore, auditLog)
+	downloadManager, err := downloads.NewManager(filepath.Join(cfg.DataDir, "downloads"))
+	if err != nil {
+		return fmt.Errorf("download manager: %w", err)
+	}
+	downloadHandler := downloads.NewHandler(downloadManager, auditLog)
+	apiTesterHandler := apitester.New(auditLog)
+	rssStore, err := rss.NewStore(filepath.Join(cfg.DataDir, "rss"))
+	if err != nil {
+		return fmt.Errorf("rss store: %w", err)
+	}
+	rssHandler := rss.NewHandler(rssStore, auditLog)
 
 	staticFS, err := static.FS()
 	if err != nil {
@@ -160,8 +186,13 @@ func runServer() error {
 		api.Group(func(p chi.Router) {
 			p.Use(authn.Middleware)
 			p.Get("/me", meHandler)
+			p.Route("/app-state", appStateHandler.Mount)
+			p.Route("/api-tester", apiTesterHandler.Mount)
 			p.Route("/browser", browser.New().Mount)
+			p.Route("/downloads", downloadHandler.Mount)
 			p.Route("/fs", fsapi.New(auditLog).Mount)
+			p.Route("/rss", rssHandler.Mount)
+			p.Route("/trash", trashHandler.Mount)
 			p.Route("/sys", func(sr chi.Router) {
 				sysinfo.New(auditLog).Mount(sr)
 				sr.Route("/audit", audit.NewHandler(auditLog).Mount)

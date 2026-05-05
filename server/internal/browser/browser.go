@@ -1,21 +1,19 @@
 package browser
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"html"
 	"io"
 	"mime"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/alysechen/mochan-linux/server/internal/netguard"
 )
 
 const (
@@ -38,27 +36,7 @@ func (h *Handler) Mount(r chi.Router) {
 }
 
 func newClient() *http.Client {
-	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           guardedDialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          16,
-		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-
-	return &http.Client{
-		Timeout:   15 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("too many redirects")
-			}
-			return validateTargetURL(req.URL)
-		},
-	}
+	return netguard.NewHTTPClient(15*time.Second, 5)
 }
 
 func (h *Handler) proxy(w http.ResponseWriter, r *http.Request) {
@@ -121,114 +99,7 @@ func (h *Handler) proxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func parseTargetURL(raw string) (*url.URL, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, errors.New("missing url")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("bad url: %w", err)
-	}
-	if err := validateTargetURL(u); err != nil {
-		return nil, err
-	}
-	u.Fragment = ""
-	u.User = nil
-	return u, nil
-}
-
-func validateTargetURL(u *url.URL) error {
-	if u == nil {
-		return errors.New("missing url")
-	}
-	scheme := strings.ToLower(u.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return errors.New("only http and https urls are supported")
-	}
-	if u.Host == "" || u.Hostname() == "" {
-		return errors.New("url host is required")
-	}
-	if u.User != nil {
-		return errors.New("url credentials are not allowed")
-	}
-	host := strings.Trim(strings.ToLower(u.Hostname()), "[]")
-	if host == "metadata.google.internal" {
-		return errors.New("cloud metadata hosts are blocked")
-	}
-	return nil
-}
-
-func guardedDialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-
-	addrs, err := resolveHost(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	if len(addrs) == 0 {
-		return nil, fmt.Errorf("no addresses for %s", host)
-	}
-
-	var blocked []netip.Addr
-	var lastErr error
-	dialer := net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
-	for _, addr := range addrs {
-		if blockedAddr(addr) {
-			blocked = append(blocked, addr)
-			continue
-		}
-		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addr.String(), port))
-		if err == nil {
-			return conn, nil
-		}
-		lastErr = err
-	}
-	if len(blocked) > 0 {
-		return nil, fmt.Errorf("blocked target address %s", blocked[0])
-	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, fmt.Errorf("no usable addresses for %s", host)
-}
-
-func resolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
-	if addr, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
-		return []netip.Addr{addr.Unmap()}, nil
-	}
-	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-	if err != nil {
-		return nil, err
-	}
-	for i := range addrs {
-		addrs[i] = addrs[i].Unmap()
-	}
-	return addrs, nil
-}
-
-func blockedAddr(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	if !addr.IsValid() {
-		return true
-	}
-	if addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalMulticast() || addr.IsLinkLocalUnicast() {
-		return true
-	}
-
-	blocked := []string{
-		"169.254.169.254", // AWS, GCP, Azure metadata convention.
-		"100.100.100.200", // Alibaba Cloud metadata.
-		"fd00:ec2::254",   // AWS IPv6 metadata.
-	}
-	for _, raw := range blocked {
-		if parsed, err := netip.ParseAddr(raw); err == nil && addr == parsed {
-			return true
-		}
-	}
-	return false
+	return netguard.ParseHTTPURL(raw)
 }
 
 func copyRequestHeader(dst, src http.Header, key string) {

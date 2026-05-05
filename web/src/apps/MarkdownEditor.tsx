@@ -8,6 +8,7 @@ import { fsClient } from '@/lib/fs';
 import { usePayloadPath } from '@/lib/openFile';
 
 const STORAGE_KEY = 'markdowneditor-content';
+const DEFAULT_FILE_NAME = 'document.md';
 
 const DEFAULT_CONTENT = `# 欢迎使用 Markdown 编辑器 (Welcome to Markdown Editor)
 
@@ -82,13 +83,25 @@ export default function MarkdownEditor({ windowId }: { windowId?: string }) {
   const [remoteSavePath, setRemoteSavePath] = useState<string | null>(null);
   const [remoteStatus, setRemoteStatus] = useState<'idle' | 'loading' | 'saving' | 'error'>('idle');
   const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [homePath, setHomePath] = useState('/');
 
   const [content, setContent] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY) || DEFAULT_CONTENT; } catch { return DEFAULT_CONTENT; }
   });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void fsClient.home().then((home) => {
+      if (alive) setHomePath(home);
+    }).catch(() => {
+      if (alive) setHomePath('/');
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // FileManager double-click → load via /api/fs.
   useEffect(() => {
@@ -113,22 +126,42 @@ export default function MarkdownEditor({ windowId }: { windowId?: string }) {
     };
   }, [remotePath]);
 
-  const saveRemote = useCallback(async () => {
-    if (!remoteSavePath) return;
-    setRemoteStatus('saving');
+  const loadServerFile = useCallback(async (path: string) => {
+    setRemoteStatus('loading');
     try {
-      await fsClient.write(remoteSavePath, content);
+      const r = await fsClient.read(path);
+      setContent(r.content);
+      setRemoteSavePath(r.path);
       setRemoteStatus('idle');
       setRemoteError(null);
     } catch (err) {
       setRemoteStatus('error');
       setRemoteError(err instanceof Error ? err.message : String(err));
     }
-  }, [remoteSavePath, content]);
+  }, []);
+
+  const saveToServer = useCallback(async (path: string, nextContent = content) => {
+    setRemoteStatus('saving');
+    try {
+      const entry = await fsClient.write(path, nextContent);
+      setRemoteSavePath(entry.path);
+      setRemoteStatus('idle');
+      setRemoteError(null);
+    } catch (err) {
+      setRemoteStatus('error');
+      setRemoteError(err instanceof Error ? err.message : String(err));
+    }
+  }, [content]);
+
+  const saveRemote = useCallback(async () => {
+    if (!remoteSavePath) return;
+    await saveToServer(remoteSavePath);
+  }, [remoteSavePath, saveToServer]);
 
   useEffect(() => {
+    if (remoteSavePath) return;
     try { localStorage.setItem(STORAGE_KEY, content); } catch { /* noop */ }
-  }, [content]);
+  }, [remoteSavePath, content]);
 
   const wordCount = useMemo(() => {
     const text = content.replace(/[#*`_\[\]\(\)!\-\|>]/g, '');
@@ -162,16 +195,16 @@ export default function MarkdownEditor({ windowId }: { windowId?: string }) {
   const handleNew = () => {
     if (window.confirm('确定要新建吗？未保存的内容将丢失。(New file - unsaved content will be lost)')) {
       setContent('');
+      setRemoteSavePath(null);
+      setRemoteStatus('idle');
+      setRemoteError(null);
     }
   };
 
-  const handleOpen = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => { setContent(String(ev.target?.result || '')); };
-    reader.readAsText(file);
-    e.target.value = '';
+  const handleOpen = async () => {
+    const path = promptServerPath('打开服务器 Markdown 文件', remoteSavePath ?? `${homePath.replace(/\/+$/, '')}/${DEFAULT_FILE_NAME}`);
+    if (!path) return;
+    await loadServerFile(path);
   };
 
   const handleSave = () => {
@@ -179,17 +212,17 @@ export default function MarkdownEditor({ windowId }: { windowId?: string }) {
       void saveRemote();
       return;
     }
-    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'document.md';
-    a.click();
-    URL.revokeObjectURL(url);
+    void handleSaveAs();
   };
 
-  const handleExportHTML = () => {
-    const html = `<!DOCTYPE html>
+  const handleSaveAs = async () => {
+    const path = promptServerPath('保存到服务器路径', remoteSavePath ?? `${homePath.replace(/\/+$/, '')}/${DEFAULT_FILE_NAME}`);
+    if (!path) return;
+    await saveToServer(path);
+  };
+
+  const buildHTML = () => {
+    return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -213,7 +246,27 @@ img { max-width: 100%; }
 <script>document.getElementById('content').innerHTML = marked.parse(${JSON.stringify(content)});</script>
 </body>
 </html>`;
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  };
+
+  const handleExportHTML = async () => {
+    const source = remoteSavePath ? remoteSavePath.replace(/\.[^/.]+$/, '.html') : `${homePath.replace(/\/+$/, '')}/document.html`;
+    const path = promptServerPath('导出 HTML 到服务器路径', source);
+    if (!path) return;
+    await saveToServer(path, buildHTML());
+  };
+
+  const handleDownloadMarkdown = () => {
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = remoteSavePath ? remoteSavePath.split('/').pop() || DEFAULT_FILE_NAME : DEFAULT_FILE_NAME;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadHTML = () => {
+    const blob = new Blob([buildHTML()], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -229,12 +282,14 @@ img { max-width: 100%; }
         <button onClick={handleNew} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="新建 (New)">
           <FileText size={14} />
         </button>
-        <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="打开 (Open)">
+        <button onClick={() => void handleOpen()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="打开服务器文件 (Open Server File)">
           <FolderOpen size={14} />
         </button>
-        <input ref={fileInputRef} type="file" accept=".md,.markdown,.txt" className="hidden" onChange={handleOpen} />
         <button onClick={handleSave} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="保存 (Save)">
           <Save size={14} />
+        </button>
+        <button onClick={() => void handleSaveAs()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="另存为服务器文件 (Save As)">
+          <Save size={14} /> 另存为
         </button>
         <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--ink-300)' }} />
         {toolbarButtons.map((btn) => (
@@ -249,12 +304,21 @@ img { max-width: 100%; }
           </button>
         ))}
         <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--ink-300)' }} />
-        <button onClick={handleExportHTML} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="导出 HTML (Export HTML)">
+        <button onClick={() => void handleExportHTML()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="导出 HTML 到服务器 (Export HTML to Server)">
           <Download size={14} /> HTML
+        </button>
+        <button onClick={handleDownloadMarkdown} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="下载 Markdown 本地副本 (Download Markdown Copy)">
+          <Download size={14} /> MD
+        </button>
+        <button onClick={handleDownloadHTML} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="下载 HTML 本地副本 (Download HTML Copy)">
+          <Download size={14} /> 本地 HTML
         </button>
         <div className="flex-1" />
         <span className="text-caption" style={{ color: 'var(--ink-500)' }}>
           {wordCount.words} 词 / {wordCount.chars} 字
+        </span>
+        <span className="max-w-[260px] truncate text-caption" title={remoteSavePath ?? '未绑定服务器文件'} style={{ color: remoteError ? 'var(--cinnabar)' : 'var(--ink-500)' }}>
+          {remoteStatus === 'loading' ? '加载中' : remoteStatus === 'saving' ? '保存中' : remoteError ?? remoteSavePath ?? '未保存'}
         </span>
       </div>
 
@@ -324,4 +388,16 @@ img { max-width: 100%; }
       </div>
     </div>
   );
+}
+
+function promptServerPath(title: string, suggestedPath: string): string | null {
+  const input = window.prompt(`${title}\n请输入服务器绝对路径。`, suggestedPath);
+  if (input == null) return null;
+  const path = input.trim();
+  if (!path) return null;
+  if (!path.startsWith('/')) {
+    window.alert('请输入以 / 开头的服务器绝对路径。');
+    return null;
+  }
+  return path;
 }

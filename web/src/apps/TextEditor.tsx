@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   FileText, FolderOpen, Save, Search, RotateCcw, RotateCw,
-  Type, Hash, Settings, X, ChevronDown, ChevronUp, Replace
+  Type, Hash, Settings, X, ChevronDown, ChevronUp, Replace, Download
 } from 'lucide-react';
 import { fsClient } from '@/lib/fs';
 import { usePayloadPath } from '@/lib/openFile';
 
 const STORAGE_KEY = 'texteditor-content';
+const DEFAULT_FILE_NAME = 'untitled.txt';
 
 const CODE_KEYWORDS = [
   'const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while',
@@ -24,10 +25,23 @@ export default function TextEditor({ windowId }: { windowId?: string }) {
   const [remoteSavePath, setRemoteSavePath] = useState<string | null>(null);
   const [remoteStatus, setRemoteStatus] = useState<'idle' | 'loading' | 'saving' | 'error'>('idle');
   const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [homePath, setHomePath] = useState('/');
 
   const [text, setText] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY) || ''; } catch { return ''; }
   });
+
+  useEffect(() => {
+    let alive = true;
+    void fsClient.home().then((home) => {
+      if (alive) setHomePath(home);
+    }).catch(() => {
+      if (alive) setHomePath('/');
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // If launched from FileManager, override local-storage state and load
   // the file from /api/fs.
@@ -54,18 +68,37 @@ export default function TextEditor({ windowId }: { windowId?: string }) {
     };
   }, [remotePath]);
 
-  const saveRemote = useCallback(async () => {
-    if (!remoteSavePath) return;
-    setRemoteStatus('saving');
+  const loadServerFile = useCallback(async (path: string) => {
+    setRemoteStatus('loading');
     try {
-      await fsClient.write(remoteSavePath, text);
+      const r = await fsClient.read(path);
+      setText(r.content);
+      setRemoteSavePath(r.path);
       setRemoteStatus('idle');
       setRemoteError(null);
     } catch (err) {
       setRemoteStatus('error');
       setRemoteError(err instanceof Error ? err.message : String(err));
     }
-  }, [remoteSavePath, text]);
+  }, []);
+
+  const saveToServer = useCallback(async (path: string) => {
+    setRemoteStatus('saving');
+    try {
+      const entry = await fsClient.write(path, text);
+      setRemoteSavePath(entry.path);
+      setRemoteStatus('idle');
+      setRemoteError(null);
+    } catch (err) {
+      setRemoteStatus('error');
+      setRemoteError(err instanceof Error ? err.message : String(err));
+    }
+  }, [text]);
+
+  const saveRemote = useCallback(async () => {
+    if (!remoteSavePath) return;
+    await saveToServer(remoteSavePath);
+  }, [remoteSavePath, saveToServer]);
   const [showFind, setShowFind] = useState(false);
   const [showReplace, setShowReplace] = useState(false);
   const [findText, setFindText] = useState('');
@@ -79,11 +112,11 @@ export default function TextEditor({ windowId }: { windowId?: string }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (remoteSavePath) return;
     try { localStorage.setItem(STORAGE_KEY, text); } catch { /* noop */ }
-  }, [text]);
+  }, [remoteSavePath, text]);
 
   const lines = useMemo(() => text.split('\n'), [text]);
 
@@ -115,7 +148,7 @@ export default function TextEditor({ windowId }: { windowId?: string }) {
     }
   }, []);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     const ta = textareaRef.current;
     if (!ta) return;
 
@@ -135,10 +168,10 @@ export default function TextEditor({ windowId }: { windowId?: string }) {
       if (e.key === 'f') { e.preventDefault(); setShowFind(v => !v); setShowReplace(false); }
       else if (e.key === 'h') { e.preventDefault(); setShowFind(true); setShowReplace(true); }
       else if (e.key === 's') { e.preventDefault(); handleSave(); }
-      else if (e.key === 'o') { e.preventDefault(); fileInputRef.current?.click(); }
+      else if (e.key === 'o') { e.preventDefault(); void handleOpen(); }
       else if (e.key === 'n') { e.preventDefault(); handleNew(); }
     }
-  }, [tabSize]);
+  };
 
   const updateCursorPos = useCallback(() => {
     const ta = textareaRef.current;
@@ -149,30 +182,40 @@ export default function TextEditor({ windowId }: { windowId?: string }) {
     setCursorPos({ line, col });
   }, []);
 
-  const handleNew = () => {
+  function handleNew() {
     if (text && !window.confirm('确定要新建文件吗？未保存的内容将丢失。(New file - unsaved changes will be lost)')) return;
     setText('');
-  };
+    setRemoteSavePath(null);
+    setRemoteStatus('idle');
+    setRemoteError(null);
+  }
 
-  const handleOpen = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => { setText(String(ev.target?.result || '')); };
-    reader.readAsText(file);
-    e.target.value = '';
-  };
+  async function handleOpen() {
+    const path = promptServerPath('打开服务器文件', remoteSavePath ?? `${homePath.replace(/\/+$/, '')}/${DEFAULT_FILE_NAME}`);
+    if (!path) return;
+    await loadServerFile(path);
+  }
 
-  const handleSave = () => {
+  function handleSave() {
     if (remoteSavePath) {
       void saveRemote();
       return;
     }
+    void handleSaveAs();
+  }
+
+  async function handleSaveAs() {
+    const path = promptServerPath('保存到服务器路径', remoteSavePath ?? `${homePath.replace(/\/+$/, '')}/${DEFAULT_FILE_NAME}`);
+    if (!path) return;
+    await saveToServer(path);
+  }
+
+  const handleDownload = () => {
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'untitled.txt';
+    a.download = remoteSavePath ? remoteSavePath.split('/').pop() || DEFAULT_FILE_NAME : DEFAULT_FILE_NAME;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -262,12 +305,17 @@ export default function TextEditor({ windowId }: { windowId?: string }) {
         <button onClick={handleNew} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="新建 (New)">
           <FileText size={14} /> 新建
         </button>
-        <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="打开 (Open)">
+        <button onClick={() => void handleOpen()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="打开服务器文件 (Open Server File)">
           <FolderOpen size={14} /> 打开
         </button>
-        <input ref={fileInputRef} type="file" accept=".txt,.js,.ts,.tsx,.jsx,.json,.md,.css,.html" className="hidden" onChange={handleOpen} />
         <button onClick={handleSave} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="保存 (Save)">
           <Save size={14} /> 保存
+        </button>
+        <button onClick={() => void handleSaveAs()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="另存为服务器文件 (Save As)">
+          <Save size={14} /> 另存为
+        </button>
+        <button onClick={handleDownload} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="下载本地副本 (Download Local Copy)">
+          <Download size={14} /> 下载
         </button>
         <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--ink-300)' }} />
         <button onClick={() => { setShowFind(v => !v); setShowReplace(false); }} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: showFind ? 'var(--cinnabar)' : 'var(--ink-700)' }} title="查找 (Find)">
@@ -387,6 +435,11 @@ export default function TextEditor({ windowId }: { windowId?: string }) {
           <span className="text-caption">{wordCount.lines} 行</span>
           <span className="text-caption">|</span>
           <span className="text-caption">{wordCount.chars} 字符</span>
+          <span className="text-caption">|</span>
+          <span className="text-caption" title={remoteSavePath ?? '未绑定服务器文件'}>
+            {remoteStatus === 'loading' ? '加载中' : remoteStatus === 'saving' ? '保存中' : remoteSavePath ?? '未保存'}
+          </span>
+          {remoteError && <span className="text-caption text-red-600">| {remoteError}</span>}
         </div>
         <div className="flex items-center gap-2">
           <span className="text-caption">UTF-8</span>
@@ -396,4 +449,16 @@ export default function TextEditor({ windowId }: { windowId?: string }) {
       </div>
     </div>
   );
+}
+
+function promptServerPath(title: string, suggestedPath: string): string | null {
+  const input = window.prompt(`${title}\n请输入服务器绝对路径。`, suggestedPath);
+  if (input == null) return null;
+  const path = input.trim();
+  if (!path) return null;
+  if (!path.startsWith('/')) {
+    window.alert('请输入以 / 开头的服务器绝对路径。');
+    return null;
+  }
+  return path;
 }
