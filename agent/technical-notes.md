@@ -114,3 +114,19 @@
 - Forecasts are cached under `<DataDir>/weather/cache.json` by coordinate for 15 minutes.
 - Weather HTTP calls use `netguard.NewHTTPClient`, so they share the same server-side network restrictions as Browser, Download Manager, API Tester, and RSS Reader.
 - Audit events are `weather.search` and `weather.forecast`; audit detail avoids provider response bodies.
+
+## Server-Side Mail Client
+
+- Email Client is backed by `/api/mail`, mounted inside the authenticated `/api` group.
+- Mail credentials are session-only. The frontend sends IMAP/SMTP credentials with each request; the backend does not persist accounts, passwords, message bodies, or attachments in app-state.
+- Supported IMAP operations are connect validation, folder list, message summary list, and message body fetch. The implementation uses a small IMAP command subset with guarded TCP dialing and supports `tls`, `starttls`, and `plain` security modes.
+- Supported SMTP operations are connect validation and sending plain text mail. Optional attachments are read from absolute server filesystem paths and are capped before MIME encoding.
+- Mail TCP dialing uses `netguard.GuardedDialContext`, so link-local and known metadata addresses are blocked while normal public, loopback, and private-network mail hosts remain reachable for the authenticated workstation user.
+- Audit events are `mail.connect`, `mail.imap.list`, `mail.imap.messages`, `mail.imap.message`, and `mail.smtp.send`; audit details include protocol, host, port, folder, recipient count, attachment count, and outcome, but not credentials, message content, headers, or attachment content.
+
+## App-State Migrations
+
+- Chat App now uses app-state ID `chatapp` for the selected Option A scope: a single-user message notebook. The old random automatic replies were removed so the app no longer invents new messages.
+- Notes now uses app-state ID `notes`. Existing `localStorage` sticky notes are read only as the first fallback when no server document exists; subsequent writes go to the server state document.
+- Calendar now uses app-state ID `calendar`. Events are persisted server-side, and `.ics` import/export works against the same normalized event list.
+- Notebook now uses app-state ID `notebook` for notebooks, rich note HTML, tags, starred state, and archive state. Existing localStorage notebook data is a one-time fallback when no server document exists.
