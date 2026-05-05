@@ -5,6 +5,7 @@ import {
   CloudRain, Sun, Cloud, Music, Video, ShoppingCart,
   Code2, Palette, MessageSquare, Newspaper
 } from 'lucide-react';
+import { bookmarksClient, type BookmarkItem } from '@/lib/bookmarks';
 
 interface Tab {
   id: string;
@@ -12,11 +13,6 @@ interface Tab {
   title: string;
   history: string[];
   historyIndex: number;
-}
-
-interface Bookmark {
-  url: string;
-  title: string;
 }
 
 interface HistoryEntry {
@@ -514,13 +510,7 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
     historyIndex: 0,
   }]);
   const [activeTabId, setActiveTabId] = useState('tab-0');
-  const [bookmarks, setBookmarks] = useState<Bookmark[]>([
-    { url: 'https://search.ink', title: '搜索 (Search)' },
-    { url: 'https://news.ink', title: '新闻 (News)' },
-    { url: 'https://wiki.ink', title: '百科 (Wiki)' },
-    { url: 'https://music.ink', title: '音乐 (Music)' },
-    { url: 'https://art.ink', title: '艺术馆 (Art Gallery)' },
-  ]);
+  const [bookmarks, setBookmarks] = useState<BookmarkItem[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [addressValue, setAddressValue] = useState(HOME_URL);
@@ -534,6 +524,19 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
       setAddressValue(activeTab.url);
     }
   }, [activeTab?.url]);
+
+  const loadBookmarks = useCallback(async () => {
+    try {
+      const data = await bookmarksClient.list();
+      setBookmarks(data.bookmarks);
+    } catch {
+      setBookmarks([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadBookmarks();
+  }, [loadBookmarks]);
 
   const navigateTo = useCallback((url: string, tabId?: string) => {
     const targetId = tabId || activeTabId;
@@ -629,14 +632,20 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
     });
   };
 
-  const toggleBookmark = () => {
+  const toggleBookmark = async () => {
     const url = activeTab?.url;
     if (!url || url === HOME_URL) return;
-    setBookmarks(prev => {
-      const exists = prev.some(b => b.url === url);
-      if (exists) return prev.filter(b => b.url !== url);
-      return [...prev, { url, title: activeTab.title }];
-    });
+    const existing = bookmarks.find(b => b.url === url);
+    if (existing) {
+      await bookmarksClient.deleteBookmark(existing.id);
+    } else {
+      await bookmarksClient.addBookmark({
+        title: activeTab.title || titleForURL(url),
+        url,
+        folder_id: 'favorites',
+      });
+    }
+    await loadBookmarks();
   };
 
   const isBookmarked = bookmarks.some(b => b.url === activeTab?.url);
@@ -783,10 +792,13 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
               <Bookmark size={14} style={{ color: 'var(--ink-500)', marginRight: '8px' }} />
               <span className="text-body-sm font-medium" style={{ color: 'var(--ink-700)' }}>书签 (Bookmarks)</span>
             </div>
-            {bookmarks.map((bm, i) => (
+            {bookmarks.map((bm) => (
               <button
-                key={i}
-                onClick={() => navigateTo(bm.url)}
+                key={bm.id}
+                onClick={() => {
+                  navigateTo(bm.url);
+                  bookmarksClient.visitBookmark(bm.id).then(loadBookmarks).catch(() => undefined);
+                }}
                 className="w-full flex items-center gap-2 px-3 py-2 text-left transition-all duration-150 hover:bg-black/5"
               >
                 <Star size={12} style={{ color: '#b8860b', fill: '#b8860b', flexShrink: 0 }} />

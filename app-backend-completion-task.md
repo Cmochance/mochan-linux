@@ -27,6 +27,11 @@ Already server-backed enough to exclude from the missing-backend queue:
 - Download Manager: `/api/downloads` creates, lists, cancels, retries, and deletes server-side download jobs; completed files are opened through `/api/fs/download`.
 - API Tester: `/api/api-tester/run` executes real HTTP requests from the server host, and request history is persisted through `/api/app-state`.
 - RSS Reader: `/api/rss` stores feed subscriptions, refreshes RSS/Atom feeds from the server, caches articles, and persists read/starred state.
+- Git Client: `/api/git` stores explicitly registered repository roots, reports real status/log/branches/diffs, and performs stage, unstage, commit, switch, branch, fetch, pull, and merge through server-side `git`.
+- SSH Client: `/ws/ssh` opens real session-only SSH shells through the backend WebSocket bridge; credentials are not persisted.
+- FTP Client: `/api/file-transfer` provides SFTP-over-SSH style listing, mkdir, delete, upload, and download between the server filesystem and a remote host; credentials are held only in browser state for the current session.
+- Bookmarks: `/api/bookmarks` persists folders and bookmarks server-side; Browser star/bookmark actions and the Bookmarks app share the same store.
+- Weather: `/api/weather` searches locations and fetches cached Open-Meteo forecasts from the backend.
 
 Partially server-backed and still in scope:
 
@@ -48,11 +53,11 @@ Partially server-backed and still in scope:
 - [x] P3 Download Manager: real server-side download tasks.
 - [x] P4 API Tester: real server-side HTTP request runner.
 - [x] P5 RSS Reader: real feed subscriptions and article cache.
-- [ ] P6 Git Client: real repository status, diff, branch, and commit operations.
-- [ ] P7 SSH Client: real SSH sessions through the server.
-- [ ] P8 FTP Client: real SFTP/FTP file transfer.
-- [ ] P9 Bookmarks: persistent bookmark store integrated with Browser.
-- [ ] P10 Weather: real weather provider and server cache.
+- [x] P6 Git Client: real repository status, diff, branch, and commit operations.
+- [x] P7 SSH Client: real SSH sessions through the server.
+- [x] P8 FTP Client: real SFTP/FTP file transfer.
+- [x] P9 Bookmarks: persistent bookmark store integrated with Browser.
+- [x] P10 Weather: real weather provider and server cache.
 - [ ] P11 Email Client: real IMAP/SMTP account support.
 - [ ] P12 Chat App: define and implement real messaging scope.
 - [ ] P13 Notes: server-backed notes.
@@ -187,6 +192,12 @@ Target behavior:
 - Support stage/unstage, commit, branch switch/create, pull/fetch, and merge only after explicit UI confirmation.
 - Never expose secrets from remotes, env files, or credential helpers in UI logs.
 
+Implementation note:
+
+- P6 uses `/api/git`; repository roots must be explicitly registered and validated as real Git worktrees before operations are allowed.
+- Backend commands run with `GIT_TERMINAL_PROMPT=0`, redacted output, timeouts, and no credential-helper prompting. Remote URL credentials and common token-like query values are redacted before responses or audit details.
+- UI supports register repo, status, staged/unstaged diff, stage/unstage, commit, branch switch/create, fetch, pull, and merge.
+
 ### P7 SSH Client
 
 Target behavior:
@@ -200,6 +211,12 @@ Security prerequisite:
 
 - Decide whether this app is allowed at all on a public single-user workstation, because it expands the service into a general SSH jump box.
 
+Implementation note:
+
+- P7 is enabled as a real session-only SSH terminal through `/ws/ssh`.
+- Password credentials are sent only as the initial WebSocket connect message and are not written to app-state or server-side files.
+- Host key handling is explicit in the UI as `session-only`; this keeps behavior visible while avoiding persistent host-key or credential stores in this phase.
+
 ### P8 FTP Client
 
 Target behavior:
@@ -208,6 +225,12 @@ Target behavior:
 - Real remote listing, upload, download, rename, delete, and transfer progress.
 - Use the same credential policy as SSH Client.
 
+Implementation note:
+
+- P8 implements SFTP-style operations over SSH transport through `/api/file-transfer`; plain FTP remains disabled.
+- The app lists real remote directories, creates remote folders, deletes remote files/directories, uploads server-side local files to the remote host, and downloads remote files into the server filesystem.
+- Credentials follow the SSH phase boundary: session-only browser state, not backend persistence.
+
 ### P9 Bookmarks
 
 Target behavior:
@@ -215,6 +238,12 @@ Target behavior:
 - Persist bookmarks and folders server-side.
 - Connect Browser star/bookmark actions to the same store.
 - Import/export JSON through the backend.
+
+Implementation note:
+
+- P9 uses `/api/bookmarks` with a JSON store under the server data directory.
+- Browser bookmark toggles and the Bookmarks app read and write the same backend store.
+- Import/export remains user-driven in the browser, but import writes through the backend instead of merging only in component state.
 
 ### P10 Weather
 
@@ -227,6 +256,12 @@ Target behavior:
 Low-risk provider option:
 
 - Open-Meteo can provide weather without a frontend secret.
+
+Implementation note:
+
+- P10 uses `/api/weather/search` and `/api/weather/forecast` backed by Open-Meteo geocoding and forecast APIs.
+- Provider calls run from the backend with the shared network guardrail client and cache forecasts for 15 minutes by coordinate.
+- No provider key is required or exposed to the frontend.
 
 ### P11 Email Client
 
@@ -451,6 +486,11 @@ For production updates, follow the repository's Git-backed workflow:
 - 2026-05-06: Completed P5 by adding `server/internal/rss` and mounting authenticated `/api/rss`. RSS data is stored in `<DataDir>/rss/index.json`; feed refreshes run from the server with `netguard`; RSS 2.0 and Atom parsing normalize article IDs, links, summaries, content, authors, and publish times.
 - 2026-05-06: Added RSS operations for feed list/add/delete, refresh one, refresh all, article list, read/unread, star/unstar, and mark-all-read. Article read/star state is preserved across refreshes, and each feed is capped at 200 cached articles.
 - 2026-05-06: Replaced RSS Reader's static demo feeds/articles with `web/src/lib/rss.ts`, backend-backed feed and article loading, real refresh/add/delete actions, read/star persistence, server-side error display, and original-article links.
+- 2026-05-06: Completed P6 by adding `server/internal/gitclient` and mounting authenticated `/api/git`. Repositories must be explicitly registered and validated as real Git worktrees before operations are allowed. The Git Client now shows real status, diffs, logs, branches, stage/unstage, commit, fetch, pull, branch create/switch, and merge actions.
+- 2026-05-06: Completed P7 by adding `server/internal/sshclient` and mounting `/ws/ssh`. SSH sessions are proxied through a backend WebSocket, use session-only password credentials, and show the session-only host-key policy in the UI.
+- 2026-05-06: Completed P8 by adding `server/internal/filetransfer` and mounting authenticated `/api/file-transfer`. The FTP Client now uses SFTP-over-SSH style backend operations for remote list, mkdir, delete, upload, and download; plain FTP remains disabled.
+- 2026-05-06: Completed P9 by adding `server/internal/bookmarks` and mounting authenticated `/api/bookmarks`. The Bookmarks app and Browser star/bookmark UI now share one server-side bookmark/folder store.
+- 2026-05-06: Completed P10 by adding `server/internal/weather` and mounting authenticated `/api/weather`. Weather search and forecasts now come from backend Open-Meteo calls with a 15-minute coordinate cache and no frontend provider key.
 
 ## Validation Results
 
@@ -470,24 +510,27 @@ For production updates, follow the repository's Git-backed workflow:
 - 2026-05-06: P5 backend tests cover RSS add/refresh/persist, Atom parsing, unsafe URL rejection, article read/star mutations, handler routes, and RSS audit events.
 - 2026-05-06: P5 cumulative backend validation passed with `cd server && GOCACHE=/private/tmp/mochan-go-cache go test ./...` and `cd server && GOCACHE=/private/tmp/mochan-go-cache go vet ./...`.
 - 2026-05-06: P5 frontend validation passed with `cd web && npm run build`; the existing Vite large chunk warning remains.
+- 2026-05-06: P6-P10 targeted backend tests passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go test ./internal/gitclient ./internal/bookmarks ./internal/weather ./internal/filetransfer ./internal/sshclient ./cmd/mochan`.
+- 2026-05-06: P6-P10 cumulative backend validation passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go test ./...` after rerunning outside the sandbox because existing `httptest` suites must bind loopback listeners.
+- 2026-05-06: P6-P10 cumulative backend vet passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go vet ./...`.
+- 2026-05-06: P6-P10 frontend and embedded binary validation passed with `GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache make build VERSION="1.0.0+p6-p10"`; the existing Vite large chunk warning remains.
 
-## Next Implementation Plan: P6 Git Client
+## Next Implementation Plan: P11 Email Client
 
-P6 should make Git Client operate on real repositories while avoiding accidental destructive repository operations and secret leakage.
+P11 should make Email Client real only after credential handling is explicit. Do not implement stored mail credentials without encryption and rotation design.
 
 Proposed implementation order:
 
-1. Inspect `web/src/apps/GitClient.tsx` to map its current repository selector, status, branch, log, diff, stage, commit, pull, and push UI behavior.
-2. Define a repository allowlist under server data/config before exposing Git operations. Do not let arbitrary browser input run Git commands against arbitrary paths.
-3. Add `server/internal/gitclient` with safe command execution using explicit argument arrays and fixed working directories. Avoid shell execution.
-4. Implement read-only endpoints first: configured repo list, status porcelain v2, current branch, branches, recent log, file diff, and remotes with URLs redacted.
-5. Add guarded write operations after read-only behavior is validated: stage, unstage, commit, checkout/create branch, fetch, pull. Push should remain explicit and may be deferred if credential behavior is unclear.
-6. Redact secrets from all command output and never show credential-helper output, `.env` contents, access tokens, or remote URLs containing credentials.
-7. Update Git Client UI to show real repo state, command errors, and confirmation prompts for write operations.
-8. Validate with temporary Git repositories in Go tests, including dirty files, staged files, branch creation, commit, redacted remotes, and command error paths.
+1. Inspect `web/src/apps/EmailClient.tsx` to map current inbox, folder, compose, send, attachment, and account behaviors.
+2. Choose the first credential mode. Default safe mode is session-only IMAP/SMTP credentials, matching SSH and SFTP, with no backend persistence.
+3. Add a backend package for IMAP folder/message listing and SMTP send. Keep account credentials out of app-state and audit details.
+4. Implement read-only IMAP first: connect test, folder list, message list, message body fetch, and attachment metadata.
+5. Add SMTP send after read-only behavior is validated, including recipient validation and size caps for attachments.
+6. Connect attachments to the server filesystem through `/api/fs` or an app-specific temporary upload area.
+7. Add Go tests with fake protocol boundaries where possible, and validate the frontend with `npm run build`.
 
 ## Blockers And Open Decisions
 
-- Need product decision before implementing SSH Client, FTP Client, Email Client, and Chat App because these require explicit credential and trust-boundary choices.
+- Need product decision before implementing Email Client and Chat App because these require explicit credential and trust-boundary choices.
 - Need decide whether generic app state should be one shared API or app-specific APIs. Default recommendation is shared state API for low-risk local-only apps, app-specific APIs for network/protocol/media apps.
 - Need decide where app-generated user files should live under `DataDir` versus the real Linux home directory.

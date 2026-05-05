@@ -27,16 +27,21 @@ import (
 	"github.com/alysechen/mochan-linux/server/internal/appstate"
 	"github.com/alysechen/mochan-linux/server/internal/audit"
 	"github.com/alysechen/mochan-linux/server/internal/auth"
+	"github.com/alysechen/mochan-linux/server/internal/bookmarks"
 	"github.com/alysechen/mochan-linux/server/internal/browser"
 	"github.com/alysechen/mochan-linux/server/internal/config"
 	"github.com/alysechen/mochan-linux/server/internal/downloads"
+	"github.com/alysechen/mochan-linux/server/internal/filetransfer"
 	"github.com/alysechen/mochan-linux/server/internal/fsapi"
+	"github.com/alysechen/mochan-linux/server/internal/gitclient"
 	"github.com/alysechen/mochan-linux/server/internal/pty"
 	"github.com/alysechen/mochan-linux/server/internal/rss"
 	"github.com/alysechen/mochan-linux/server/internal/settings"
+	"github.com/alysechen/mochan-linux/server/internal/sshclient"
 	"github.com/alysechen/mochan-linux/server/internal/static"
 	"github.com/alysechen/mochan-linux/server/internal/sysinfo"
 	"github.com/alysechen/mochan-linux/server/internal/trash"
+	"github.com/alysechen/mochan-linux/server/internal/weather"
 )
 
 var version = "0.1.0-dev"
@@ -163,6 +168,22 @@ func runServer() error {
 		return fmt.Errorf("rss store: %w", err)
 	}
 	rssHandler := rss.NewHandler(rssStore, auditLog)
+	gitStore, err := gitclient.NewStore(filepath.Join(cfg.DataDir, "git"))
+	if err != nil {
+		return fmt.Errorf("git store: %w", err)
+	}
+	gitHandler := gitclient.NewHandler(gitStore, auditLog)
+	bookmarkStore, err := bookmarks.NewStore(filepath.Join(cfg.DataDir, "bookmarks"))
+	if err != nil {
+		return fmt.Errorf("bookmarks store: %w", err)
+	}
+	bookmarkHandler := bookmarks.NewHandler(bookmarkStore, auditLog)
+	weatherCache, err := weather.NewCache(filepath.Join(cfg.DataDir, "weather"))
+	if err != nil {
+		return fmt.Errorf("weather cache: %w", err)
+	}
+	weatherHandler := weather.NewHandler(weatherCache, auditLog)
+	fileTransferHandler := filetransfer.NewHandler(auditLog)
 
 	staticFS, err := static.FS()
 	if err != nil {
@@ -188,11 +209,15 @@ func runServer() error {
 			p.Get("/me", meHandler)
 			p.Route("/app-state", appStateHandler.Mount)
 			p.Route("/api-tester", apiTesterHandler.Mount)
+			p.Route("/bookmarks", bookmarkHandler.Mount)
 			p.Route("/browser", browser.New().Mount)
 			p.Route("/downloads", downloadHandler.Mount)
+			p.Route("/file-transfer", fileTransferHandler.Mount)
 			p.Route("/fs", fsapi.New(auditLog).Mount)
+			p.Route("/git", gitHandler.Mount)
 			p.Route("/rss", rssHandler.Mount)
 			p.Route("/trash", trashHandler.Mount)
+			p.Route("/weather", weatherHandler.Mount)
 			p.Route("/sys", func(sr chi.Router) {
 				sysinfo.New(auditLog).Mount(sr)
 				sr.Route("/audit", audit.NewHandler(auditLog).Mount)
@@ -204,6 +229,7 @@ func runServer() error {
 	ptyHandler := pty.New(authn, 5*time.Minute)
 	defer ptyHandler.Close()
 	r.Handle("/ws/pty", ptyHandler)
+	r.Handle("/ws/ssh", sshclient.New(authn, auditLog))
 
 	r.Handle("/*", spaHandler(staticFS))
 
