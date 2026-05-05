@@ -73,3 +73,44 @@
 - The parser supports RSS 2.0 and Atom feeds using Go XML parsing. Article IDs are stable hashes built from feed ID plus GUID, Atom ID, link, title, and publish time fallbacks.
 - Article read/star state is preserved across refreshes, and each feed is capped at 200 cached articles to prevent unbounded growth.
 - Audit events are `rss.feed.add`, `rss.feed.delete`, `rss.feed.refresh`, `rss.refresh`, `rss.article.read`, `rss.article.star`, and `rss.article.read_all`. Feed URL query strings, article bodies, and request headers are not logged.
+
+## Server-Side Git Client
+
+- Git Client is backed by `/api/git`, mounted inside the authenticated `/api` group.
+- Repository records are stored under `<DataDir>/git/index.json`. A repository must be explicitly registered with an absolute path and validated through `git rev-parse --show-toplevel` before any operation is allowed.
+- Git commands run through `exec.CommandContext` with explicit argument arrays, `GIT_TERMINAL_PROMPT=0`, empty askpass variables, and a 45-second timeout.
+- Supported operations include repo list/add/remove, status, diff, log, branches, stage, unstage, commit, switch, create branch, fetch, pull, and merge.
+- Command output is capped and redacts remote URL credentials plus common token-like query values before returning to the UI or audit detail.
+- Audit events include `git.repo.add`, `git.repo.delete`, `git.stage`, `git.unstage`, `git.commit`, `git.checkout`, `git.branch.create`, `git.fetch`, `git.pull`, and `git.merge`.
+
+## Server-Side SSH Client
+
+- SSH Client is backed by `/ws/ssh`, authenticated with the existing JWT cookie or token query parameter.
+- The browser sends credentials only in the first WebSocket connect message. The backend does not persist SSH credentials or host keys in this phase.
+- Host key policy is visible in the UI as `session-only`; the backend currently uses a non-persistent host-key callback to avoid writing host state before a durable trust-store design exists.
+- The backend requests a PTY, starts a real remote shell, and bridges stdout, stderr, and stdin over WebSocket. WebSocket writes are serialized so stdout and stderr do not race on the same connection.
+- Audit event `ssh.connect` records host, port, username, policy, outcome, and error text, but not passwords.
+
+## Server-Side File Transfer
+
+- FTP Client is backed by `/api/file-transfer`, mounted inside the authenticated `/api` group.
+- Plain FTP is disabled. The implemented protocol is SFTP-style file transfer over SSH transport, using session-only password credentials sent with each request from browser state.
+- Supported operations include connect test, remote list, remote mkdir, remote delete, upload from a server-local path to a remote path, and download from a remote path to a server-local path.
+- Local files are real server filesystem paths and should be selected from the File Manager-compatible `/api/fs` listing in the UI.
+- Audit events include `filetransfer.connect`, `filetransfer.mkdir`, `filetransfer.delete`, `filetransfer.upload`, and `filetransfer.download`; passwords are never logged.
+
+## Server-Side Bookmarks
+
+- Bookmarks are backed by `/api/bookmarks`, mounted inside the authenticated `/api` group.
+- Bookmark data is stored under `<DataDir>/bookmarks/index.json` with folders and bookmarks in one JSON document.
+- Browser star/bookmark toggles and the Bookmarks app share the same backend store. Browser bookmark clicks increment visit counts through `/api/bookmarks/bookmarks/{id}/visit`.
+- Import writes through `/api/bookmarks/import`; export remains a browser-side JSON download from the current backend state.
+- Audit events include `bookmarks.bookmark.add`, `bookmarks.bookmark.update`, `bookmarks.bookmark.delete`, `bookmarks.folder.add`, `bookmarks.folder.delete`, and `bookmarks.import`.
+
+## Server-Side Weather
+
+- Weather is backed by `/api/weather`, mounted inside the authenticated `/api` group.
+- `/api/weather/search` uses Open-Meteo geocoding, and `/api/weather/forecast` uses Open-Meteo forecast data. No provider key is required.
+- Forecasts are cached under `<DataDir>/weather/cache.json` by coordinate for 15 minutes.
+- Weather HTTP calls use `netguard.NewHTTPClient`, so they share the same server-side network restrictions as Browser, Download Manager, API Tester, and RSS Reader.
+- Audit events are `weather.search` and `weather.forecast`; audit detail avoids provider response bodies.

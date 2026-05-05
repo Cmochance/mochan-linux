@@ -10,6 +10,14 @@
 //   - apitester.run
 //   - rss.feed.add / rss.feed.delete / rss.feed.refresh / rss.refresh
 //   - rss.article.read / rss.article.star / rss.article.read_all
+//   - git.repo.add / git.repo.delete / git.stage / git.unstage / git.commit
+//   - git.checkout / git.branch.create / git.fetch / git.pull / git.merge
+//   - ssh.connect
+//   - filetransfer.connect / filetransfer.mkdir / filetransfer.delete
+//   - filetransfer.upload / filetransfer.download
+//   - bookmarks.bookmark.add / bookmarks.bookmark.update / bookmarks.bookmark.delete
+//   - bookmarks.folder.add / bookmarks.folder.delete / bookmarks.import
+//   - weather.search / weather.forecast
 //
 // Format: one JSON object per line. Append-only. Rotated to <file>.1 when
 // the active file exceeds maxFileBytes. We keep at most one rotation
