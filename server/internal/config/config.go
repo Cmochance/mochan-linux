@@ -9,22 +9,34 @@ import (
 )
 
 type Config struct {
-	Listen       string
-	Username     string
-	PasswordHash string
-	JWTSecret    []byte
-	TokenTTL     time.Duration
-	DataDir      string
-	ShellUser    string
+	Listen          string
+	Username        string
+	Email           string
+	PasswordHash    string
+	JWTSecret       []byte
+	TokenTTL        time.Duration
+	DataDir         string
+	DBPath          string
+	ShellUser       string
+	ResendAPIKey    string
+	ResendFromEmail string
+	InviteTTL       time.Duration
 }
 
 func Load() (*Config, error) {
 	c := &Config{
-		Listen:       envOr("MOCHAN_LISTEN", "127.0.0.1:38421"),
-		Username:     envOr("MOCHAN_USERNAME", "admin"),
-		PasswordHash: os.Getenv("MOCHAN_PASSWORD_HASH"),
-		DataDir:      envOr("MOCHAN_DATA_DIR", "/var/lib/mochan"),
-		ShellUser:    os.Getenv("MOCHAN_SHELL_USER"),
+		Listen:          envOr("MOCHAN_LISTEN", "127.0.0.1:38421"),
+		Username:        envOr("MOCHAN_USERNAME", "admin"),
+		Email:           os.Getenv("MOCHAN_EMAIL"),
+		PasswordHash:    os.Getenv("MOCHAN_PASSWORD_HASH"),
+		DataDir:         envOr("MOCHAN_DATA_DIR", "/var/lib/mochan"),
+		ShellUser:       os.Getenv("MOCHAN_SHELL_USER"),
+		ResendAPIKey:    os.Getenv("MOCHAN_RESEND_API_KEY"),
+		ResendFromEmail: envOr("MOCHAN_RESEND_FROM_EMAIL", "mochan-linux <noreply@auth.mochance.xyz>"),
+	}
+	c.DBPath = envOr("MOCHAN_DB_PATH", "")
+	if c.DBPath == "" {
+		c.DBPath = c.DataDir + "/mochan.db"
 	}
 
 	secret := os.Getenv("MOCHAN_JWT_SECRET")
@@ -43,6 +55,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid MOCHAN_TOKEN_TTL %q: %w", ttlStr, err)
 	}
 	c.TokenTTL = ttl
+
+	inviteTTLStr := envOr("MOCHAN_INVITE_TTL", "168h")
+	inviteTTL, err := time.ParseDuration(inviteTTLStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid MOCHAN_INVITE_TTL %q: %w", inviteTTLStr, err)
+	}
+	c.InviteTTL = inviteTTL
 
 	if minLen, _ := strconv.Atoi(envOr("MOCHAN_MIN_SECRET_LEN", "32")); len(c.JWTSecret) < minLen {
 		return nil, fmt.Errorf("MOCHAN_JWT_SECRET must be at least %d bytes", minLen)
