@@ -23,6 +23,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
 
+	"github.com/alysechen/mochan-linux/server/internal/accounts"
 	"github.com/alysechen/mochan-linux/server/internal/apitester"
 	"github.com/alysechen/mochan-linux/server/internal/appstate"
 	"github.com/alysechen/mochan-linux/server/internal/audit"
@@ -42,6 +43,8 @@ import (
 	"github.com/alysechen/mochan-linux/server/internal/static"
 	"github.com/alysechen/mochan-linux/server/internal/sysinfo"
 	"github.com/alysechen/mochan-linux/server/internal/trash"
+	"github.com/alysechen/mochan-linux/server/internal/userdb"
+	"github.com/alysechen/mochan-linux/server/internal/verify"
 	"github.com/alysechen/mochan-linux/server/internal/weather"
 )
 
@@ -63,11 +66,16 @@ func main() {
 				fail(err)
 			}
 			return
+		case "invite":
+			if err := cmdInvite(os.Args[2:]); err != nil {
+				fail(err)
+			}
+			return
 		case "run", "serve":
 			// fallthrough to runServer below
 		default:
 			fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
-			fmt.Fprintln(os.Stderr, "usage: mochan [run|hash-password|gen-secret|version]")
+			fmt.Fprintln(os.Stderr, "usage: mochan [run|hash-password|gen-secret|invite|version]")
 			os.Exit(2)
 		}
 	}
@@ -127,7 +135,27 @@ func runServer() error {
 		return err
 	}
 
-	authn := auth.New(cfg.Username, cfg.PasswordHash, cfg.JWTSecret, cfg.TokenTTL)
+	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
+		return fmt.Errorf("ensure data dir: %w", err)
+	}
+	db, err := userdb.Open(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("open user db: %w", err)
+	}
+	defer db.Close()
+	if err := auth.BootstrapAdmin(context.Background(), db, cfg.Username, cfg.Email, cfg.PasswordHash); err != nil {
+		return fmt.Errorf("bootstrap admin: %w", err)
+	}
+
+	authn := auth.New(db, cfg.JWTSecret, cfg.TokenTTL)
+
+	verifyCfg := verify.DefaultConfig()
+	verifyCfg.APIKey = cfg.ResendAPIKey
+	verifyCfg.FromEmail = cfg.ResendFromEmail
+	verifySvc := verify.New(db, verifyCfg, nil)
+	if !verifySvc.Configured() {
+		log.Printf("warning: MOCHAN_RESEND_API_KEY not set — registration emails will fail until configured")
+	}
 
 	auditLog, err := audit.New(filepath.Join(cfg.DataDir, "audit.log"))
 	if err != nil {
@@ -202,13 +230,23 @@ func runServer() error {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	accountsHandler := &accounts.Handler{
+		DB:        db,
+		Auth:      authn,
+		Verify:    verifySvc,
+		Audit:     auditLog,
+		InviteTTL: cfg.InviteTTL,
+	}
+
 	r.Route("/api", func(api chi.Router) {
 		api.Post("/auth/login", loginHandler(authn, cfg, auditLog))
 		api.Post("/auth/logout", logoutHandler(auditLog, authn))
+		accountsHandler.MountPublic(api)
 
 		api.Group(func(p chi.Router) {
 			p.Use(authn.Middleware)
 			p.Get("/me", meHandler)
+			accountsHandler.MountAdmin(p)
 			p.Route("/app-state", appStateHandler.Mount)
 			p.Route("/api-tester", apiTesterHandler.Mount)
 			p.Route("/bookmarks", bookmarkHandler.Mount)
@@ -264,13 +302,18 @@ func runServer() error {
 
 func loginHandler(a *auth.Authenticator, cfg *config.Config, al *audit.Logger) http.HandlerFunc {
 	type req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		// Identifier accepts username or email. Username is kept for
+		// backward compatibility with older clients.
+		Identifier string `json:"identifier"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`
 	}
 	type resp struct {
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 		Username  string    `json:"username"`
+		Email     string    `json:"email"`
+		Role      string    `json:"role"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body req
@@ -278,13 +321,18 @@ func loginHandler(a *auth.Authenticator, cfg *config.Config, al *audit.Logger) h
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
-		if err := a.Verify(body.Username, body.Password); err != nil {
+		ident := body.Identifier
+		if ident == "" {
+			ident = body.Username
+		}
+		result, err := a.Verify(r.Context(), ident, body.Password)
+		if err != nil {
 			// Constant-ish delay to slow down brute force.
 			time.Sleep(500 * time.Millisecond)
 			if al != nil {
 				al.Log(r.Context(), audit.Event{
 					Type:    "auth.login.fail",
-					Actor:   body.Username,
+					Actor:   ident,
 					IP:      audit.ClientIP(r),
 					Outcome: "deny",
 				})
@@ -292,8 +340,8 @@ func loginHandler(a *auth.Authenticator, cfg *config.Config, al *audit.Logger) h
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
-		token, exp, err := a.Issue(body.Username)
-		if err != nil {
+		token, exp, issueErr := a.Issue(result.User)
+		if issueErr != nil {
 			http.Error(w, "issue failed", http.StatusInternalServerError)
 			return
 		}
@@ -309,12 +357,18 @@ func loginHandler(a *auth.Authenticator, cfg *config.Config, al *audit.Logger) h
 		if al != nil {
 			al.Log(r.Context(), audit.Event{
 				Type:    "auth.login.success",
-				Actor:   body.Username,
+				Actor:   result.User.Username,
 				IP:      audit.ClientIP(r),
 				Outcome: "ok",
 			})
 		}
-		writeJSON(w, http.StatusOK, resp{Token: token, ExpiresAt: exp, Username: body.Username})
+		writeJSON(w, http.StatusOK, resp{
+			Token:     token,
+			ExpiresAt: exp,
+			Username:  result.User.Username,
+			Email:     result.User.Email,
+			Role:      result.User.Role,
+		})
 		_ = cfg
 	}
 }
@@ -356,6 +410,8 @@ func meHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"username": c.Subject,
+		"role":     c.Role,
+		"uid":      c.UID,
 		"expires":  c.ExpiresAt,
 	})
 }
@@ -382,6 +438,112 @@ func spaHandler(root fs.FS) http.Handler {
 		}
 		fsrv.ServeHTTP(w, r)
 	})
+}
+
+// cmdInvite implements `mochan invite create [--email=...]`. The DB path
+// comes from the same config the server uses, so the server doesn't need to
+// be running. The created code is printed to stdout for the operator to
+// hand to the invitee.
+func cmdInvite(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: mochan invite create [--email=address]")
+		return errors.New("subcommand required")
+	}
+	switch args[0] {
+	case "create":
+		return cmdInviteCreate(args[1:])
+	case "list":
+		return cmdInviteList()
+	default:
+		return fmt.Errorf("unknown invite subcommand %q", args[0])
+	}
+}
+
+func cmdInviteCreate(args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	email := ""
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--email="):
+			email = strings.TrimPrefix(a, "--email=")
+		case a == "--email":
+			// next arg
+			continue
+		}
+	}
+	db, err := userdb.Open(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := auth.BootstrapAdmin(ctx, db, cfg.Username, cfg.Email, cfg.PasswordHash); err != nil {
+		return err
+	}
+	users, err := db.ListUsers(ctx)
+	if err != nil || len(users) == 0 {
+		return fmt.Errorf("no users in db; run the server once before issuing invites")
+	}
+	var adminID int64
+	for _, u := range users {
+		if u.Role == "admin" {
+			adminID = u.ID
+			break
+		}
+	}
+	if adminID == 0 {
+		adminID = users[0].ID
+	}
+
+	code, err := accounts.GenerateInviteCode()
+	if err != nil {
+		return err
+	}
+	inv, err := db.CreateInvite(ctx, code, email, adminID, cfg.InviteTTL)
+	if err != nil {
+		return err
+	}
+	fmt.Println(inv.Code)
+	if email != "" {
+		fmt.Fprintf(os.Stderr, "(bound to %s, expires %s)\n", inv.Email, inv.ExpiresAt.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(os.Stderr, "(any email, expires %s)\n", inv.ExpiresAt.Format(time.RFC3339))
+	}
+	return nil
+}
+
+func cmdInviteList() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	db, err := userdb.Open(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	invs, err := db.ListInvites(context.Background())
+	if err != nil {
+		return err
+	}
+	for _, inv := range invs {
+		used := "open"
+		if inv.Used() {
+			used = "used"
+		} else if time.Now().After(inv.ExpiresAt) {
+			used = "expired"
+		}
+		bound := inv.Email
+		if bound == "" {
+			bound = "(any)"
+		}
+		fmt.Printf("%s\t%s\t%s\t%s\n", inv.Code, used, bound, inv.ExpiresAt.Format(time.RFC3339))
+	}
+	return nil
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
