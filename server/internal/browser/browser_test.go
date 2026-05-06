@@ -6,11 +6,19 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/alysechen/mochan-linux/server/internal/netguard"
 )
+
+func TestMain(m *testing.M) {
+	restore := netguard.SetAllowPrivate(true)
+	code := m.Run()
+	restore()
+	os.Exit(code)
+}
 
 func TestRewriteHTMLRoutesLinksThroughProxy(t *testing.T) {
 	base, err := url.Parse("http://127.0.0.1:8080/docs/page.html")

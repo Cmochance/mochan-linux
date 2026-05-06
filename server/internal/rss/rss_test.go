@@ -12,7 +12,15 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/alysechen/mochan-linux/server/internal/audit"
+	"github.com/alysechen/mochan-linux/server/internal/netguard"
 )
+
+func TestMain(m *testing.M) {
+	restore := netguard.SetAllowPrivate(true)
+	code := m.Run()
+	restore()
+	os.Exit(code)
+}
 
 func TestStoreAddFeedRefreshAndPersist(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
