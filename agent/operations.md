@@ -14,8 +14,8 @@ Use the Git-backed deployment path after a PR has been merged to `main`:
 ssh dochenmo
 cd /root/alysechen/github/mochan-linux
 git pull --ff-only origin main
-short="$(git rev-parse --short HEAD)"
-make build VERSION="1.0.0+$short"
+version="$(git describe --tags --always --dirty)"
+make build VERSION="$version"
 install -m 0755 bin/mochan /usr/local/bin/mochan
 git restore --worktree server/internal/static/dist/index.html
 systemctl restart mochan.service

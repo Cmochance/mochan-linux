@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-05-06
+
+Patch release focused on documentation and release readiness.
+
+### Added
+
+- Real README preview screenshots for the desktop, app launcher, File Manager,
+  Terminal, Settings, and Browser start page.
+- README app backend completion summary through P15, with the remaining
+  server-backed app work clearly separated from low-priority local utilities
+  and games.
+- v1.0.1 release notes under `docs/release-notes-v1.0.1.md`.
+
+### Notes
+
+- No runtime application code changes are included in this patch. The current
+  backend implementation state is unchanged from the completed P0-P15 work.
+
 ## [1.0.0] — 2026-05-04
 
 First stable release. The browser-as-Linux-desktop concept hits feature
