@@ -16,6 +16,14 @@ import (
 	"github.com/alysechen/mochan-linux/server/internal/auth"
 )
 
+const (
+	// Reap connections whose underlying TCP has stalled by failing pings.
+	// 30s interval keeps idle terminals cheap; 10s timeout reaps a
+	// half-open peer in roughly one ping cycle.
+	pingInterval = 30 * time.Second
+	pingTimeout  = 10 * time.Second
+)
+
 // Handler bridges browser WebSockets to long-lived PTY sessions.
 type Handler struct {
 	auth *auth.Authenticator
@@ -112,9 +120,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3) Bridge in both directions.
+	// 3) Bridge in both directions, plus a keepalive pinger so a dead TCP
+	// peer doesn't pin a goroutine forever in conn.Read.
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pingCtx, pingCancel := context.WithTimeout(ctx, pingTimeout)
+				err := conn.Ping(pingCtx)
+				pingCancel()
+				if err != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 
 	// session → ws
 	go func() {
