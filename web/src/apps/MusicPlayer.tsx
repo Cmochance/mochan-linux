@@ -3,15 +3,32 @@ import {
   Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1,
   Volume2, VolumeX, Music, ListMusic, X, Plus, GripVertical, Trash2
 } from 'lucide-react';
+import { appStateClient } from '@/lib/app-state';
+import { listMediaFiles, saveMediaBlob, serverMediaURL, type MediaLibraryFile } from '@/lib/media-library';
+import { basename, usePayloadPath } from '@/lib/openFile';
 
 interface Track {
   id: string;
-  file: File;
   url: string;
+  path?: string;
   title: string;
   artist: string;
   duration: number;
+  size?: number;
+  mtime?: number;
 }
+
+interface MusicPlayerState {
+  tracks: Track[];
+  currentIndex: number;
+  volume: number;
+  isMuted: boolean;
+  shuffle: boolean;
+  repeat: 'off' | 'all' | 'one';
+}
+
+const APP_ID = 'musicplayer';
+const AUDIO_EXTENSIONS = ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'flac', 'opus'] as const;
 
 function formatTime(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return '0:00';
@@ -24,7 +41,64 @@ function generateId() {
   return Math.random().toString(36).substring(2, 9);
 }
 
-export default function MusicPlayer() {
+function stripExtension(name: string): string {
+  return name.replace(/\.[^/.]+$/, '');
+}
+
+function isAudioName(name: string): boolean {
+  const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+  return AUDIO_EXTENSIONS.includes(ext as typeof AUDIO_EXTENSIONS[number]);
+}
+
+function fromLibraryFile(file: MediaLibraryFile): Track {
+  return {
+    id: file.path,
+    path: file.path,
+    url: file.url,
+    title: stripExtension(file.name),
+    artist: '服务器媒体库 (Server Library)',
+    duration: 0,
+    size: file.size,
+    mtime: file.mtime,
+  };
+}
+
+function normalizeTracks(tracks: Track[] | undefined): Track[] {
+  if (!Array.isArray(tracks)) return [];
+  return tracks
+    .filter(track => track && (track.path || track.url))
+    .map(track => ({
+      ...track,
+      id: track.path || track.id || generateId(),
+      url: serverMediaURL(track.path, track.url),
+      title: track.title || stripExtension(track.path ? basename(track.path) : 'Untitled'),
+      artist: track.artist || '服务器媒体库 (Server Library)',
+      duration: Number(track.duration) || 0,
+    }));
+}
+
+function serializeTracks(tracks: Track[]): Track[] {
+  return tracks
+    .filter(track => track.path)
+    .map(track => ({
+      ...track,
+      url: '',
+    }));
+}
+
+function mergeTracks(primary: Track[], secondary: Track[]): Track[] {
+  const seen = new Set<string>();
+  const merged: Track[] = [];
+  for (const track of [...primary, ...secondary]) {
+    const key = track.path || track.id;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(track);
+  }
+  return merged;
+}
+
+export default function MusicPlayer({ windowId }: { windowId?: string }) {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -36,6 +110,9 @@ export default function MusicPlayer() {
   const [repeat, setRepeat] = useState<'off' | 'all' | 'one'>('off');
   const [showPlaylist, setShowPlaylist] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(true);
+  const [libraryMessage, setLibraryMessage] = useState('');
+  const [isSavingFiles, setIsSavingFiles] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -45,8 +122,83 @@ export default function MusicPlayer() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const rafRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const loadedRef = useRef(false);
+  const payloadPath = usePayloadPath(windowId);
 
   const currentTrack = tracks[currentIndex];
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const fallback: MusicPlayerState = {
+          tracks: [],
+          currentIndex: 0,
+          volume: 0.8,
+          isMuted: false,
+          shuffle: false,
+          repeat: 'off',
+        };
+        const [saved, files] = await Promise.all([
+          appStateClient.getOrDefault<MusicPlayerState>(APP_ID, fallback),
+          listMediaFiles('music', AUDIO_EXTENSIONS),
+        ]);
+        if (!alive) return;
+        const merged = mergeTracks(normalizeTracks(saved.tracks), files.map(fromLibraryFile));
+        setTracks(merged);
+        setCurrentIndex(Math.min(Math.max(saved.currentIndex || 0, 0), Math.max(merged.length - 1, 0)));
+        setVolume(typeof saved.volume === 'number' ? saved.volume : 0.8);
+        setIsMuted(Boolean(saved.isMuted));
+        setShuffle(Boolean(saved.shuffle));
+        setRepeat(saved.repeat === 'all' || saved.repeat === 'one' ? saved.repeat : 'off');
+        setLibraryMessage(merged.length > 0 ? `已载入 ${merged.length} 首服务器音乐` : '服务器音乐库为空');
+      } catch (err) {
+        if (!alive) return;
+        console.error('Failed to load music library:', err);
+        setLibraryMessage('音乐库加载失败，请确认后端文件接口可用');
+      } finally {
+        if (alive) {
+          loadedRef.current = true;
+          setIsLoadingLibrary(false);
+        }
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!loadedRef.current || !payloadPath || !isAudioName(payloadPath)) return;
+    setTracks(prev => {
+      if (prev.some(track => track.path === payloadPath)) return prev;
+      return [
+        {
+          id: payloadPath,
+          path: payloadPath,
+          url: serverMediaURL(payloadPath),
+          title: stripExtension(basename(payloadPath)),
+          artist: '服务器文件 (Server File)',
+          duration: 0,
+        },
+        ...prev,
+      ];
+    });
+    setCurrentIndex(0);
+  }, [payloadPath]);
+
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      appStateClient.put<MusicPlayerState>(APP_ID, {
+        tracks: serializeTracks(tracks),
+        currentIndex: Math.min(currentIndex, Math.max(tracks.length - 1, 0)),
+        volume,
+        isMuted,
+        shuffle,
+        repeat,
+      }).catch(err => console.error('Failed to save music player state:', err));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [tracks, currentIndex, volume, isMuted, shuffle, repeat]);
 
   // Initialize audio context and analyser
   const initAudioContext = useCallback(() => {
@@ -158,22 +310,36 @@ export default function MusicPlayer() {
     }
   }, [volume, isMuted]);
 
-  const handleFileUpload = (files: FileList | null) => {
+  const handleFileUpload = async (files: FileList | null) => {
     if (!files) return;
     const audioFiles = Array.from(files).filter(f =>
-      f.type.startsWith('audio/') || f.name.endsWith('.mp3') || f.name.endsWith('.wav') || f.name.endsWith('.ogg')
+      f.type.startsWith('audio/') || isAudioName(f.name)
     );
-
-    const newTracks: Track[] = audioFiles.map(file => ({
-      id: generateId(),
-      file,
-      url: URL.createObjectURL(file),
-      title: file.name.replace(/\.[^/.]+$/, ''),
-      artist: '未知艺术家 (Unknown)',
-      duration: 0,
-    }));
-
-    setTracks(prev => [...prev, ...newTracks]);
+    if (audioFiles.length === 0) return;
+    setIsSavingFiles(true);
+    setLibraryMessage('正在保存音乐到服务器...');
+    try {
+      const newTracks: Track[] = [];
+      for (const file of audioFiles) {
+        const saved = await saveMediaBlob('music', file.name, file, file.type);
+        newTracks.push({
+          id: saved.path,
+          path: saved.path,
+          url: saved.url,
+          title: stripExtension(file.name),
+          artist: '服务器媒体库 (Server Library)',
+          duration: 0,
+          size: saved.size,
+        });
+      }
+      setTracks(prev => mergeTracks([...prev, ...newTracks], []));
+      setLibraryMessage(`已保存 ${newTracks.length} 首音乐到服务器`);
+    } catch (err) {
+      console.error('Failed to save audio files:', err);
+      setLibraryMessage('音乐保存失败，请确认后端文件接口可用');
+    } finally {
+      setIsSavingFiles(false);
+    }
   };
 
   const handlePlay = () => {
@@ -335,7 +501,7 @@ export default function MusicPlayer() {
             <div className="flex flex-col items-center justify-center text-center p-4">
               <Music size={80} style={{ color: 'var(--ink-400)' }} />
               <p className="mt-4 text-body-sm" style={{ color: 'var(--ink-500)' }}>
-                点击添加音乐<br />Click to add music
+                {isLoadingLibrary ? '正在加载音乐库' : '点击添加音乐'}<br />{isLoadingLibrary ? 'Loading library' : 'Click to add music'}
               </p>
             </div>
           )}
@@ -483,11 +649,12 @@ export default function MusicPlayer() {
       <div className="flex-shrink-0 flex items-center justify-center gap-3 px-4 mb-4">
         <button
           onClick={() => fileInputRef.current?.click()}
+          disabled={isSavingFiles}
           className="flex items-center gap-2 px-4 py-2 rounded text-body-md transition-all duration-75 hover:scale-[1.02]"
-          style={{ backgroundColor: 'var(--ink-800)', color: 'var(--ink-50)' }}
+          style={{ backgroundColor: 'var(--ink-800)', color: 'var(--ink-50)', opacity: isSavingFiles ? 0.7 : 1 }}
         >
           <Plus size={16} />
-          添加音乐 (Add Music)
+          {isSavingFiles ? '保存中...' : '添加音乐 (Add Music)'}
         </button>
         <input
           ref={fileInputRef}
@@ -498,6 +665,11 @@ export default function MusicPlayer() {
           onChange={(e) => handleFileUpload(e.target.files)}
         />
       </div>
+      {libraryMessage && (
+        <div className="flex-shrink-0 text-center text-caption px-4 mb-3" style={{ color: 'var(--ink-500)' }}>
+          {libraryMessage}
+        </div>
+      )}
 
       {/* Playlist Panel */}
       {showPlaylist && (

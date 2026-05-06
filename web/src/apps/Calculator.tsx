@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { History, Delete, Calculator as CalcIcon } from 'lucide-react';
+import { appStateClient } from '@/lib/app-state';
 
 interface CalcEntry {
   expression: string;
@@ -8,6 +9,11 @@ interface CalcEntry {
 }
 
 const HISTORY_KEY = 'ink-os-calc-history';
+const APP_ID = 'calculator';
+
+interface CalculatorState {
+  history: CalcEntry[];
+}
 
 function loadHistory(): CalcEntry[] {
   try {
@@ -16,21 +22,40 @@ function loadHistory(): CalcEntry[] {
   } catch { return []; }
 }
 
-function saveHistory(h: CalcEntry[]) {
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-50)));
-}
-
 export default function Calculator() {
   const [display, setDisplay] = useState('0');
   const [expression, setExpression] = useState('');
   const [prevValue, setPrevValue] = useState<number | null>(null);
   const [operator, setOperator] = useState<string | null>(null);
   const [waitingForOperand, setWaitingForOperand] = useState(false);
-  const [history, setHistory] = useState<CalcEntry[]>(loadHistory);
+  const [history, setHistory] = useState<CalcEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [scientific, setScientific] = useState(false);
+  const loadedRef = useRef(false);
 
-  useEffect(() => { saveHistory(history); }, [history]);
+  useEffect(() => {
+    let alive = true;
+    appStateClient.getOrDefault<CalculatorState>(APP_ID, { history: loadHistory() })
+      .then(state => {
+        if (!alive) return;
+        setHistory(Array.isArray(state.history) ? state.history.slice(-50) : []);
+      })
+      .catch(err => console.error('Failed to load calculator history:', err))
+      .finally(() => {
+        if (alive) loadedRef.current = true;
+      });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      appStateClient.put<CalculatorState>(APP_ID, {
+        history: history.slice(-50),
+      }).catch(err => console.error('Failed to save calculator history:', err));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [history]);
 
   const addToHistory = useCallback((expr: string, result: string) => {
     setHistory(prev => [...prev, { expression: expr, result, timestamp: Date.now() }]);

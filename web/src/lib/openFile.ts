@@ -36,6 +36,27 @@ const ROUTES: readonly RouteEntry[] = [
     height: 640,
   },
   {
+    exts: ['pdf'],
+    appId: 'pdfreader',
+    titlePrefix: 'PDF',
+    width: 980,
+    height: 720,
+  },
+  {
+    exts: ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'flac', 'opus'],
+    appId: 'musicplayer',
+    titlePrefix: '音乐',
+    width: 560,
+    height: 720,
+  },
+  {
+    exts: ['mp4', 'webm', 'ogv', 'mov', 'mkv'],
+    appId: 'videoplayer',
+    titlePrefix: '视频',
+    width: 980,
+    height: 640,
+  },
+  {
     exts: ['txt', 'log', 'conf', 'cfg', 'ini', 'env', 'sh', 'bash', 'zsh',
            'go', 'py', 'rs', 'js', 'jsx', 'ts', 'tsx', 'json', 'yaml', 'yml',
            'toml', 'html', 'htm', 'css', 'scss', 'sql', 'rb', 'php',

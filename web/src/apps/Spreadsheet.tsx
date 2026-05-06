@@ -4,10 +4,12 @@ import {
   AlignLeft, AlignCenter, AlignRight, Plus, Trash2,
   Paintbrush, Hash
 } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 const COLS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
 const ROWS = Array.from({ length: 50 }, (_, i) => i + 1);
 const STORAGE_KEY = 'spreadsheet-data';
+const SPREADSHEET_APP_ID = 'spreadsheet';
 
 interface CellData {
   value: string;
@@ -22,6 +24,15 @@ interface SheetData {
   cells: Record<string, CellData>;
   colWidths: Record<string, number>;
   rowHeights: Record<string, number>;
+}
+
+function loadLocalSheet(): SheetData {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return { cells: saved ? JSON.parse(saved) : {}, colWidths: {}, rowHeights: {} };
+  } catch {
+    return { cells: {}, colWidths: {}, rowHeights: {} };
+  }
 }
 
 function getCellRef(col: string, row: number): string {
@@ -90,9 +101,7 @@ function evaluateFormula(formula: string, cells: Record<string, CellData>): stri
 }
 
 export default function Spreadsheet() {
-  const [cells, setCells] = useState<Record<string, CellData>>(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
-  });
+  const [cells, setCells] = useState<Record<string, CellData>>(() => loadLocalSheet().cells);
   const [selectedCell, setSelectedCell] = useState<string | null>(null);
   const [editingCell, setEditingCell] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -100,6 +109,8 @@ export default function Spreadsheet() {
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
   const [selectedRange, setSelectedRange] = useState<string[]>([]);
   const [clipboard, setClipboard] = useState<{ ref: string; data: CellData } | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const editRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -107,8 +118,35 @@ export default function Spreadsheet() {
   const resizeState = useRef<{ col?: string; row?: number; startX?: number; startY?: number; startWidth?: number; startHeight?: number }>({});
 
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cells)); } catch { /* noop */ }
-  }, [cells]);
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback = loadLocalSheet();
+        const state = await appStateClient.getOrDefault<SheetData>(SPREADSHEET_APP_ID, fallback);
+        if (cancelled) return;
+        setCells(state.cells && typeof state.cells === 'object' ? state.cells : fallback.cells);
+        setColWidths(state.colWidths && typeof state.colWidths === 'object' ? state.colWidths : {});
+        setRowHeights(state.rowHeights && typeof state.rowHeights === 'object' ? state.rowHeights : {});
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<SheetData>(SPREADSHEET_APP_ID, { cells, colWidths, rowHeights })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [cells, colWidths, rowHeights, loaded]);
 
   const getCell = useCallback((ref: string): CellData => {
     return cells[ref] || { value: '', formula: '' };
@@ -362,6 +400,11 @@ export default function Spreadsheet() {
         ))}
 
         <div className="flex-1" />
+        {syncError && (
+          <span className="text-caption px-2 py-1 rounded" style={{ color: 'var(--error)', backgroundColor: 'rgba(179,57,47,0.08)' }}>
+            {syncError}
+          </span>
+        )}
         {selectedCell && (
           <span className="text-caption" style={{ color: 'var(--ink-500)' }}>
             {selectedCell}: {selectedFormula}

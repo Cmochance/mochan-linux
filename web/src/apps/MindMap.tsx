@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   Plus, Trash2, ZoomIn, ZoomOut, Maximize, Download,
-  GitBranch, Mouse, Move
+  GitBranch, Move, Upload
 } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 interface MindNode {
   id: string;
@@ -21,6 +22,7 @@ interface Connection {
 }
 
 const STORAGE_KEY = 'mindmap-data';
+const MINDMAP_APP_ID = 'mindmap';
 
 const BRANCH_COLORS = [
   '#1a1a1a', '#b3392f', '#5a7a8a', '#4a7c59', '#b8860b', '#7a7a7a', '#5c5c5c',
@@ -34,27 +36,38 @@ function generateId() {
   return 'node_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
 }
 
+function defaultNodes(): MindNode[] {
+  return [{
+    id: 'root',
+    text: '中心主题\n(Central Topic)',
+    x: 400,
+    y: 300,
+    parentId: null,
+    level: 0,
+    color: BRANCH_COLORS[0],
+  }];
+}
+
+function loadLocalMindMap(): MindMapState {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return { nodes: saved ? JSON.parse(saved) : defaultNodes() };
+  } catch {
+    return { nodes: defaultNodes() };
+  }
+}
+
+interface MindMapState {
+  nodes: MindNode[];
+}
+
 function getBezierPath(x1: number, y1: number, x2: number, y2: number): string {
   const midX = (x1 + x2) / 2;
   return `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
 }
 
 export default function MindMap() {
-  const [nodes, setNodes] = useState<MindNode[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch { /* noop */ }
-    return [{
-      id: 'root',
-      text: '中心主题\n(Central Topic)',
-      x: 400,
-      y: 300,
-      parentId: null,
-      level: 0,
-      color: BRANCH_COLORS[0],
-    }];
-  });
+  const [nodes, setNodes] = useState<MindNode[]>(() => loadLocalMindMap().nodes);
   const [selectedNode, setSelectedNode] = useState<string | null>('root');
   const [editingNode, setEditingNode] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -65,13 +78,43 @@ export default function MindMap() {
   const [dragNode, setDragNode] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const editRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const jsonInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(nodes)); } catch { /* noop */ }
-  }, [nodes]);
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback = loadLocalMindMap();
+        const state = await appStateClient.getOrDefault<MindMapState>(MINDMAP_APP_ID, fallback);
+        if (cancelled) return;
+        const nextNodes = Array.isArray(state.nodes) && state.nodes.length > 0 ? state.nodes : fallback.nodes;
+        setNodes(nextNodes);
+        setSelectedNode(nextNodes.some(n => n.id === 'root') ? 'root' : nextNodes[0]?.id ?? null);
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<MindMapState>(MINDMAP_APP_ID, { nodes })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [nodes, loaded]);
 
   const connections = useMemo(() => {
     const conns: Connection[] = [];
@@ -227,6 +270,36 @@ export default function MindMap() {
     img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
   };
 
+  const exportJSON = () => {
+    const blob = new Blob([JSON.stringify({ nodes }, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mindmap.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const parsed = JSON.parse(String(ev.target?.result || '{}'));
+        const nextNodes = Array.isArray(parsed) ? parsed : parsed.nodes;
+        if (!Array.isArray(nextNodes) || nextNodes.length === 0) throw new Error('Invalid mind map JSON');
+        setNodes(nextNodes);
+        setSelectedNode(nextNodes.some((n: MindNode) => n.id === 'root') ? 'root' : nextNodes[0]?.id ?? null);
+        setSyncError(null);
+      } catch (err) {
+        setSyncError(err instanceof Error ? err.message : String(err));
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   const handleAutoLayout = () => {
     const root = nodes.find(n => n.id === 'root');
     if (!root) return;
@@ -291,9 +364,21 @@ export default function MindMap() {
         <button onClick={handleAutoLayout} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="自动布局 (Auto Layout)">
           <Move size={14} /> 自动布局
         </button>
-        <button onClick={handleExport} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="导出 PNG (Export)">
-          <Download size={14} /> 导出
+        <button onClick={() => jsonInputRef.current?.click()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="导入 JSON (Import JSON)">
+          <Upload size={14} /> 导入
         </button>
+        <input ref={jsonInputRef} type="file" accept="application/json,.json" className="hidden" onChange={importJSON} />
+        <button onClick={exportJSON} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="导出 JSON (Export JSON)">
+          <Download size={14} /> JSON
+        </button>
+        <button onClick={handleExport} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="导出 PNG (Export PNG)">
+          <Download size={14} /> PNG
+        </button>
+        {syncError && (
+          <span className="text-caption px-2 py-1 rounded" style={{ color: 'var(--error)', backgroundColor: 'rgba(179,57,47,0.08)' }}>
+            {syncError}
+          </span>
+        )}
       </div>
 
       {/* Canvas */}

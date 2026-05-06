@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] — 2026-05-07
+
+Patch release that finishes the tracked application backend-completion queue
+from P16 through P30.
+
+### Added
+
+- Server-backed app-state persistence for Spreadsheet, Mind Map,
+  Presentation, Pomodoro, Habit Tracker, Dictionary, Translator, Music Player,
+  Video Player, PDF Reader, Paint, Calculator, Snake, 2048, and Radio.
+- Shared media-library storage for Photo Album, Camera, Voice Recorder, Music
+  Player, Video Player, PDF Reader uploads, and Paint drawings under
+  `~/.mochan/media/<kind>`.
+- File Manager routing for PDF, audio, and video files so they open in the
+  dedicated reader/player apps.
+- v1.0.2 release notes under `docs/release-notes-v1.0.2.md`.
+
+### Notes
+
+- Translator still uses the existing client-side phrase/dictionary runner
+  because no provider and secret-handling policy has been selected.
+- Stateless local tools and games remain frontend-only unless they gain a
+  concrete saved-data, preset, leaderboard, or generated-file requirement.
+
 ## [1.0.1] — 2026-05-06
 
 Patch release focused on documentation and release readiness.

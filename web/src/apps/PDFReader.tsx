@@ -1,59 +1,224 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   FolderOpen, ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
-  Maximize, RotateCw, Download, Trash2, Clock
+  Maximize, RotateCw, Trash2, Clock, Server
 } from 'lucide-react';
+import { appStateClient } from '@/lib/app-state';
+import { saveMediaBlob, serverMediaURL } from '@/lib/media-library';
+import { basename, usePayloadPath } from '@/lib/openFile';
 
 const STORAGE_KEY_RECENT = 'pdfreader-recent';
+const APP_ID = 'pdfreader';
 
 interface RecentFile {
   id: string;
   name: string;
   url: string;
+  path?: string;
   timestamp: number;
+  page?: number;
+  zoom?: number;
+  rotation?: number;
+  size?: number;
 }
 
-export default function PDFReader() {
+interface PDFReaderState {
+  recentFiles: RecentFile[];
+  currentFile?: RecentFile;
+  currentPage: number;
+  zoom: number;
+  rotation: number;
+}
+
+function normalizeRecent(files: RecentFile[] | undefined): RecentFile[] {
+  if (!Array.isArray(files)) return [];
+  return files
+    .filter(file => file && (file.path || file.url))
+    .map(file => ({
+      ...file,
+      id: file.path || file.id,
+      url: serverMediaURL(file.path, file.url),
+      page: Math.max(1, Number(file.page) || 1),
+      zoom: Math.max(25, Number(file.zoom) || 100),
+      rotation: Number(file.rotation) || 0,
+    }))
+    .slice(0, 10);
+}
+
+function serializeRecent(files: RecentFile[]): RecentFile[] {
+  return files
+    .filter(file => file.path)
+    .map(file => ({
+      ...file,
+      url: '',
+    }));
+}
+
+function isPDFPath(path: string): boolean {
+  return path.toLowerCase().endsWith('.pdf');
+}
+
+export default function PDFReader({ windowId }: { windowId?: string }) {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>('');
+  const [currentPath, setCurrentPath] = useState<string | undefined>();
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [zoom, setZoom] = useState(100);
   const [rotation, setRotation] = useState(0);
   const [showSidebar, setShowSidebar] = useState(true);
-  const [recentFiles, setRecentFiles] = useState<RecentFile[]>(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_RECENT) || '[]'); } catch { return []; }
-  });
+  const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [statusText, setStatusText] = useState('正在加载最近文件...');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const loadedRef = useRef(false);
+  const payloadPath = usePayloadPath(windowId);
 
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY_RECENT, JSON.stringify(recentFiles)); } catch { /* noop */ }
-  }, [recentFiles]);
-
-  const loadPdf = useCallback((file: File, url: string) => {
-    setPdfUrl(url);
-    setFileName(file.name);
-    setCurrentPage(1);
-    setTotalPages(1);
-    setRotation(0);
-    setZoom(100);
-
-    const newRecent: RecentFile = {
-      id: Date.now().toString(),
-      name: file.name,
-      url,
-      timestamp: Date.now(),
-    };
-    setRecentFiles(prev => [newRecent, ...prev.filter(f => f.name !== file.name)].slice(0, 10));
+    let alive = true;
+    (async () => {
+      try {
+        let localFallback: RecentFile[] = [];
+        try { localFallback = JSON.parse(localStorage.getItem(STORAGE_KEY_RECENT) || '[]'); } catch { localFallback = []; }
+        const saved = await appStateClient.getOrDefault<PDFReaderState>(APP_ID, {
+          recentFiles: localFallback,
+          currentPage: 1,
+          zoom: 100,
+          rotation: 0,
+        });
+        if (!alive) return;
+        const recents = normalizeRecent(saved.recentFiles);
+        setRecentFiles(recents);
+        if (saved.currentFile?.path) {
+          const current = normalizeRecent([saved.currentFile])[0];
+          if (current) {
+            setPdfUrl(current.url);
+            setFileName(current.name);
+            setCurrentPath(current.path);
+            setCurrentPage(saved.currentPage || current.page || 1);
+            setZoom(saved.zoom || current.zoom || 100);
+            setRotation(saved.rotation || current.rotation || 0);
+          }
+        }
+        setStatusText(recents.length > 0 ? `已载入 ${recents.length} 个最近 PDF` : '最近文件为空');
+      } catch (err) {
+        if (!alive) return;
+        console.error('Failed to load PDF reader state:', err);
+        setStatusText('最近文件加载失败，请确认后端状态接口可用');
+      } finally {
+        if (alive) loadedRef.current = true;
+      }
+    })();
+    return () => { alive = false; };
   }, []);
+
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      const currentFile = currentPath
+        ? recentFiles.find(file => file.path === currentPath)
+        : undefined;
+      appStateClient.put<PDFReaderState>(APP_ID, {
+        recentFiles: serializeRecent(recentFiles),
+        currentFile: currentFile ? { ...currentFile, url: '' } : undefined,
+        currentPage,
+        zoom,
+        rotation,
+      }).catch(err => console.error('Failed to save PDF reader state:', err));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [recentFiles, currentPath, currentPage, zoom, rotation]);
+
+  const openRecentFile = useCallback((recent: RecentFile) => {
+    setPdfUrl(serverMediaURL(recent.path, recent.url));
+    setFileName(recent.name);
+    setCurrentPath(recent.path);
+    setCurrentPage(recent.page || 1);
+    setZoom(recent.zoom || 100);
+    setRotation(recent.rotation || 0);
+    setTotalPages(1);
+  }, []);
+
+  const addRecent = useCallback((file: RecentFile) => {
+    const newRecent: RecentFile = {
+      ...file,
+      id: file.path || file.id || String(Date.now()),
+      timestamp: Date.now(),
+      page: file.page || 1,
+      zoom: file.zoom || 100,
+      rotation: file.rotation || 0,
+    };
+    setRecentFiles(prev => [newRecent, ...prev.filter(f => f.path !== newRecent.path && f.name !== newRecent.name)].slice(0, 10));
+  }, []);
+
+  const openServerPDF = useCallback((path: string) => {
+    if (!path || !isPDFPath(path)) {
+      setStatusText('请输入服务器上的 PDF 绝对路径');
+      return;
+    }
+    const recent: RecentFile = {
+      id: path,
+      name: basename(path),
+      path,
+      url: serverMediaURL(path),
+      timestamp: Date.now(),
+      page: 1,
+      zoom: 100,
+      rotation: 0,
+    };
+    openRecentFile(recent);
+    addRecent(recent);
+    setStatusText(`已打开服务器 PDF: ${recent.name}`);
+  }, [addRecent, openRecentFile]);
+
+  useEffect(() => {
+    if (!loadedRef.current || !payloadPath) return;
+    openServerPDF(payloadPath);
+  }, [payloadPath, openServerPDF]);
+
+  useEffect(() => {
+    if (!currentPath) return;
+    setRecentFiles(prev => prev.map(file => {
+      if (file.path !== currentPath) return file;
+      if (file.page === currentPage && file.zoom === zoom && file.rotation === rotation) return file;
+      return { ...file, page: currentPage, zoom, rotation };
+    }));
+  }, [currentPath, currentPage, zoom, rotation]);
+
+  const loadPdf = useCallback(async (file: File) => {
+    setStatusText('正在上传 PDF 到服务器...');
+    try {
+      const saved = await saveMediaBlob('documents', file.name, file, 'application/pdf');
+      const recent: RecentFile = {
+        id: saved.path,
+        name: file.name,
+        path: saved.path,
+        url: saved.url,
+        timestamp: Date.now(),
+        page: 1,
+        zoom: 100,
+        rotation: 0,
+        size: saved.size,
+      };
+      openRecentFile(recent);
+      addRecent(recent);
+      setStatusText(`已保存并打开 ${file.name}`);
+    } catch (err) {
+      console.error('Failed to save PDF:', err);
+      setStatusText('PDF 保存失败，请确认后端文件接口可用');
+    }
+  }, [addRecent, openRecentFile]);
+
+  const handleOpenServerPath = () => {
+    const path = window.prompt('输入服务器上的 PDF 绝对路径', currentPath || '');
+    if (path) openServerPDF(path.trim());
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const url = URL.createObjectURL(file);
-    loadPdf(file, url);
+    loadPdf(file);
     e.target.value = '';
   };
 
@@ -70,9 +235,8 @@ export default function PDFReader() {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files?.[0];
-    if (file && file.type === 'application/pdf') {
-      const url = URL.createObjectURL(file);
-      loadPdf(file, url);
+    if (file && (file.type === 'application/pdf' || isPDFPath(file.name))) {
+      loadPdf(file);
     }
   };
 
@@ -92,13 +256,13 @@ export default function PDFReader() {
 
   const clearRecent = () => {
     setRecentFiles([]);
-    recentFiles.forEach(f => URL.revokeObjectURL(f.url));
+    setCurrentPath(undefined);
+    setStatusText('最近文件已清空');
   };
 
   const loadRecent = (rf: RecentFile) => {
-    setPdfUrl(rf.url);
-    setFileName(rf.name);
-    setCurrentPage(1);
+    openRecentFile(rf);
+    setStatusText(`已打开 ${rf.name}`);
   };
 
   return (
@@ -107,6 +271,9 @@ export default function PDFReader() {
       <div className="flex items-center gap-1 px-2 py-1 border-b flex-shrink-0" style={{ borderColor: 'var(--ink-200)', backgroundColor: 'var(--ink-100)' }}>
         <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="打开 PDF (Open)">
           <FolderOpen size={14} /> 打开
+        </button>
+        <button onClick={handleOpenServerPath} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="打开服务器 PDF 路径">
+          <Server size={14} /> 服务器路径
         </button>
         <input ref={fileInputRef} type="file" accept=".pdf" className="hidden" onChange={handleFileSelect} />
 
@@ -156,6 +323,11 @@ export default function PDFReader() {
           {fileName || '未选择文件 (No file)'}
         </span>
       </div>
+      {statusText && (
+        <div className="px-3 py-1 border-b text-caption truncate" style={{ borderColor: 'var(--ink-200)', color: 'var(--ink-500)', backgroundColor: 'var(--ink-50)' }}>
+          {statusText}
+        </div>
+      )}
 
       {/* Main Area */}
       <div className="flex-1 flex overflow-hidden">

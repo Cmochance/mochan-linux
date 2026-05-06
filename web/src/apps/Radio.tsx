@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Play, Square, Volume2, VolumeX, Star, StarOff, Radio as RadioIcon } from 'lucide-react';
+import { appStateClient } from '@/lib/app-state';
 
 interface Station {
   id: string;
@@ -11,6 +12,15 @@ interface Station {
   color: string;
   nowPlaying: string[];
 }
+
+interface RadioState {
+  favorites: string[];
+  currentStationId: string | null;
+  volume: number;
+  isMuted: boolean;
+}
+
+const APP_ID = 'radio';
 
 const STATIONS: Station[] = [
   {
@@ -91,23 +101,51 @@ export default function Radio() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef<number>(0);
   const nowPlayingTimerRef = useRef<ReturnType<typeof setInterval>>(null);
+  const loadedRef = useRef(false);
 
   const currentStation = STATIONS.find(s => s.id === currentStationId);
 
-  // Load favorites
   useEffect(() => {
-    const saved = localStorage.getItem('radio_favorites');
-    if (saved) {
-      try {
-        setFavorites(new Set(JSON.parse(saved)));
-      } catch { /* ignore */ }
-    }
+    let alive = true;
+    let localFavorites: string[] = [];
+    try {
+      const saved = localStorage.getItem('radio_favorites');
+      localFavorites = saved ? JSON.parse(saved) : [];
+    } catch { localFavorites = []; }
+    appStateClient.getOrDefault<RadioState>(APP_ID, {
+      favorites: localFavorites,
+      currentStationId: null,
+      volume: 0.7,
+      isMuted: false,
+    })
+      .then(state => {
+        if (!alive) return;
+        setFavorites(new Set(Array.isArray(state.favorites) ? state.favorites : []));
+        setCurrentStationId(state.currentStationId && STATIONS.some(station => station.id === state.currentStationId)
+          ? state.currentStationId
+          : null);
+        setVolume(typeof state.volume === 'number' ? state.volume : 0.7);
+        setIsMuted(Boolean(state.isMuted));
+      })
+      .catch(err => console.error('Failed to load radio state:', err))
+      .finally(() => {
+        if (alive) loadedRef.current = true;
+      });
+    return () => { alive = false; };
   }, []);
 
-  // Save favorites
   useEffect(() => {
-    localStorage.setItem('radio_favorites', JSON.stringify(Array.from(favorites)));
-  }, [favorites]);
+    if (!loadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      appStateClient.put<RadioState>(APP_ID, {
+        favorites: Array.from(favorites),
+        currentStationId,
+        volume,
+        isMuted,
+      }).catch(err => console.error('Failed to save radio state:', err));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [favorites, currentStationId, volume, isMuted]);
 
   // Now playing rotation
   useEffect(() => {
@@ -220,7 +258,6 @@ export default function Radio() {
     if (stationId === currentStationId) return;
     setShowStatic(true);
     setTimeout(() => setShowStatic(false), 300);
-    setCurrentStationId(stationId);
     setCurrentStationId(stationId);
     setIsPlaying(true);
     setNowPlayingIndex(0);
