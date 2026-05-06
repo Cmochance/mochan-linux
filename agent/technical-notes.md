@@ -130,3 +130,25 @@
 - Notes now uses app-state ID `notes`. Existing `localStorage` sticky notes are read only as the first fallback when no server document exists; subsequent writes go to the server state document.
 - Calendar now uses app-state ID `calendar`. Events are persisted server-side, and `.ics` import/export works against the same normalized event list.
 - Notebook now uses app-state ID `notebook` for notebooks, rich note HTML, tags, starred state, and archive state. Existing localStorage notebook data is a one-time fallback when no server document exists.
+- Spreadsheet now uses app-state ID `spreadsheet` for workbook cells, column widths, and row heights. Formula evaluation remains frontend-only.
+- Mind Map now uses app-state ID `mindmap` for the node graph. JSON import/export exchanges the same server-backed document shape; PNG export remains a local copy action.
+- Presentation now uses app-state ID `presentation` for slide decks. JSON import/export exchanges the same server-backed document shape; PPTX export remains deferred.
+- Pomodoro now uses app-state ID `pomodoro` for settings, current task, daily completed count, and session history. The active countdown itself is not restored after reload.
+- Habit Tracker now uses app-state ID `habittracker` for habits and completion dates.
+- Dictionary now uses app-state ID `dictionary` for favorites, lookup history, and word-of-day selection. The dictionary source remains the bundled frontend dataset.
+- Translator now uses app-state ID `translator` for translation history. Real provider-backed translation remains deferred until a provider and secret policy are chosen.
+- Photo Album now uses app-state ID `photoalbum` for custom albums and photo metadata. Photo files are stored in the server user's real home at `~/.mochan/media/photos` through `/api/fs/upload` and displayed through `/api/fs/download`.
+- Camera saves captured PNG files into the Photo Album media library with photo source `camera`; webcam access stays browser-side.
+- Voice Recorder now uses app-state ID `voicerecorder` for recording metadata. Audio blobs are stored in `~/.mochan/media/audio` through `/api/fs/upload` and displayed through `/api/fs/download`.
+- Music Player now uses app-state ID `musicplayer` for playlist order and playback preferences. Audio files live in `~/.mochan/media/music` and are played through `/api/fs/download`.
+- Video Player now uses app-state ID `videoplayer` for playlist order and playback preferences. Video files live in `~/.mochan/media/videos` and are played through `/api/fs/download`.
+- PDF Reader now uses app-state ID `pdfreader` for recent files and reading position. File Manager routes `.pdf` files into the app, and uploaded PDFs live in `~/.mochan/media/documents`.
+- Paint now uses app-state ID `paint` for tool settings and recent drawing metadata. Canvas PNG saves live in `~/.mochan/media/drawings`, and existing local or server images can be opened into the canvas.
+- Low-priority persistent local data now uses app-state where useful: Calculator history (`calculator`), Snake high score (`snake`), 2048 best score (`puzzle2048`), and Radio favorites/preferences (`radio`).
+
+## Media Library Helpers
+
+- `web/src/lib/media-library.ts` centralizes media paths, `/api/fs/upload` writes, `/api/fs/download` URLs, and Photo Album metadata helpers for apps that generate user media.
+- Current media paths are under the real Linux home directory as `~/.mochan/media/<kind>`, not under backend `DataDir`. This keeps generated media visible to File Manager and avoids putting large blobs into the 2 MiB app-state document cap.
+- Shared media kinds currently include `photos`, `audio`, `music`, `videos`, `documents`, and `drawings`.
+- `apiFetch` must not force `content-type: application/json` for `FormData`; file upload clients rely on the browser-generated multipart boundary.

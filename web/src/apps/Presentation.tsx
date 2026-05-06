@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   Plus, Trash2, Copy, Monitor, Type, Square, Circle, Minus,
-  ChevronLeft, ChevronRight, X, Layout, Image, Move
+  ChevronLeft, ChevronRight, X, Layout, Image, Move, Download, Upload
 } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 type ElementType = 'text' | 'rect' | 'circle' | 'line';
 
@@ -30,6 +31,7 @@ interface Slide {
 type Tool = 'select' | 'text' | 'rect' | 'circle' | 'line';
 
 const STORAGE_KEY = 'presentation-data';
+const PRESENTATION_APP_ID = 'presentation';
 
 const SLIDE_W = 960;
 const SLIDE_H = 540;
@@ -92,10 +94,21 @@ function createDefaultSlides(): Slide[] {
   ];
 }
 
+interface PresentationState {
+  slides: Slide[];
+}
+
+function loadLocalPresentation(): PresentationState {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return { slides: saved ? JSON.parse(saved) : createDefaultSlides() };
+  } catch {
+    return { slides: createDefaultSlides() };
+  }
+}
+
 export default function Presentation() {
-  const [slides, setSlides] = useState<Slide[]>(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') || createDefaultSlides(); } catch { return createDefaultSlides(); }
-  });
+  const [slides, setSlides] = useState<Slide[]>(() => loadLocalPresentation().slides);
   const [currentSlide, setCurrentSlide] = useState(0);
   const [tool, setTool] = useState<Tool>('select');
   const [selectedElement, setSelectedElement] = useState<string | null>(null);
@@ -106,12 +119,42 @@ export default function Presentation() {
   const [drawStart, setDrawStart] = useState({ x: 0, y: 0 });
   const [dragElement, setDragElement] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const editRef = useRef<HTMLTextAreaElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(slides)); } catch { /* noop */ }
-  }, [slides]);
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback = loadLocalPresentation();
+        const state = await appStateClient.getOrDefault<PresentationState>(PRESENTATION_APP_ID, fallback);
+        if (cancelled) return;
+        const nextSlides = Array.isArray(state.slides) && state.slides.length > 0 ? state.slides : fallback.slides;
+        setSlides(nextSlides);
+        setCurrentSlide(0);
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<PresentationState>(PRESENTATION_APP_ID, { slides })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [slides, loaded]);
 
   const addSlide = useCallback((template = 'blank') => {
     const newSlide: Slide = {
@@ -198,6 +241,38 @@ export default function Presentation() {
     ));
     setSelectedElement(null);
   }, [selectedElement, currentSlide]);
+
+  const exportJSON = () => {
+    const blob = new Blob([JSON.stringify({ slides }, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'presentation.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const parsed = JSON.parse(String(ev.target?.result || '{}'));
+        const nextSlides = Array.isArray(parsed) ? parsed : parsed.slides;
+        if (!Array.isArray(nextSlides) || nextSlides.length === 0) throw new Error('Invalid presentation JSON');
+        setSlides(nextSlides);
+        setCurrentSlide(0);
+        setSelectedElement(null);
+        setEditingElement(null);
+        setSyncError(null);
+      } catch (err) {
+        setSyncError(err instanceof Error ? err.message : String(err));
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
 
   const handleCanvasMouseDown = (e: React.MouseEvent) => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -467,6 +542,13 @@ export default function Presentation() {
         <button onClick={deleteSlide} disabled={slides.length <= 1} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80 disabled:opacity-30" style={{ color: 'var(--cinnabar)' }}>
           <Trash2 size={14} /> 删除
         </button>
+        <button onClick={() => importRef.current?.click()} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }}>
+          <Upload size={14} /> 导入
+        </button>
+        <input ref={importRef} type="file" accept="application/json,.json" className="hidden" onChange={importJSON} />
+        <button onClick={exportJSON} className="flex items-center gap-1 px-2 py-1 rounded text-body-sm hover:opacity-80" style={{ color: 'var(--ink-700)' }}>
+          <Download size={14} /> 导出
+        </button>
 
         <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--ink-300)' }} />
 
@@ -502,6 +584,11 @@ export default function Presentation() {
         <span className="text-caption" style={{ color: 'var(--ink-500)' }}>
           {currentSlide + 1} / {slides.length}
         </span>
+        {syncError && (
+          <span className="text-caption px-2 py-1 rounded" style={{ color: 'var(--error)', backgroundColor: 'rgba(179,57,47,0.08)' }}>
+            {syncError}
+          </span>
+        )}
 
         <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--ink-300)' }} />
 

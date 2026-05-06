@@ -3,6 +3,7 @@ import {
   Plus, Check, Flame, TrendingUp, X, Trash2, Edit3,
   BarChart3, ChevronLeft, ChevronRight
 } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 /* ─────────────── types ─────────────── */
 
@@ -20,11 +21,15 @@ interface Habit {
   targetDays?: number; // per week
 }
 
+interface HabitTrackerState {
+  habits: Habit[];
+}
 
 
 /* ─────────────── constants ─────────────── */
 
 const LS_HABITS = "inkos_habit_habits";
+const HABIT_TRACKER_APP_ID = "habittracker";
 
 const CATEGORIES: HabitCategory[] = ["Health", "Learning", "Productivity", "Creative", "Social", "Other"];
 
@@ -86,6 +91,15 @@ const DEFAULT_HABITS: Habit[] = [
     completions: generatePastDates(7), createdAt: "2024-01-01",
   },
 ];
+
+function loadLocalHabits(): Habit[] {
+  try {
+    const saved = localStorage.getItem(LS_HABITS);
+    return saved ? JSON.parse(saved) : DEFAULT_HABITS;
+  } catch {
+    return DEFAULT_HABITS;
+  }
+}
 
 function generatePastDates(count: number): string[] {
   const dates: string[] = [];
@@ -181,17 +195,14 @@ function getMonthDates(year: number, month: number): Date[] {
 /* ─────────────── main component ─────────────── */
 
 export default function HabitTracker() {
-  const [habits, setHabits] = useState<Habit[]>(() => {
-    try {
-      const saved = localStorage.getItem(LS_HABITS);
-      return saved ? JSON.parse(saved) : DEFAULT_HABITS;
-    } catch { return DEFAULT_HABITS; }
-  });
+  const [habits, setHabits] = useState<Habit[]>(loadLocalHabits);
   const [viewMode, setViewMode] = useState<ViewMode>("weekly");
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
   const [selectedMonth] = useState(new Date());
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // Form state
   const [formName, setFormName] = useState("");
@@ -204,8 +215,34 @@ export default function HabitTracker() {
     return MOTIVATIONAL_QUOTES[dayOfYear % MOTIVATIONAL_QUOTES.length];
   }, []);
 
-  // Persist
-  useEffect(() => { localStorage.setItem(LS_HABITS, JSON.stringify(habits)); }, [habits]);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback = { habits: loadLocalHabits() };
+        const state = await appStateClient.getOrDefault<HabitTrackerState>(HABIT_TRACKER_APP_ID, fallback);
+        if (cancelled) return;
+        setHabits(Array.isArray(state.habits) ? state.habits : fallback.habits);
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<HabitTrackerState>(HABIT_TRACKER_APP_ID, { habits })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [habits, loaded]);
 
   const toggleHabit = useCallback((habitId: string, date: string) => {
     setHabits(prev => prev.map(h => {
@@ -320,6 +357,11 @@ export default function HabitTracker() {
         <div>
           <h2 className="text-body-md font-semibold" style={{ color: "var(--ink-800)" }}>习惯追踪 (Habit Tracker)</h2>
           <p className="text-[10px] mt-0.5 italic" style={{ color: "var(--ink-500)" }}>{quote}</p>
+          {syncError && (
+            <p className="text-caption mt-1 px-2 py-1 rounded inline-block" style={{ color: "var(--error)", backgroundColor: "rgba(179,57,47,0.08)" }}>
+              {syncError}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           <button

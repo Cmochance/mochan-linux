@@ -3,6 +3,7 @@ import {
   Play, Pause, RotateCcw, SkipForward, Timer, Flame,
   Settings2, TrendingUp, CheckCircle2, X
 } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 /* ─────────────── types ─────────────── */
 
@@ -23,6 +24,14 @@ interface PomodoroSettings {
   soundEnabled: boolean;
 }
 
+interface PomodoroState {
+  settings: PomodoroSettings;
+  history: PomodoroSession[];
+  taskName: string;
+  todayDate: string;
+  todayCompleted: number;
+}
+
 /* ─────────────── constants ─────────────── */
 
 const LS_SETTINGS = "inkos_pomo_settings";
@@ -30,6 +39,7 @@ const LS_HISTORY = "inkos_pomo_history";
 const LS_TASK = "inkos_pomo_task";
 const LS_TODAY_COUNT = "inkos_pomo_today";
 const LS_LAST_DATE = "inkos_pomo_last_date";
+const POMODORO_APP_ID = "pomodoro";
 
 const DEFAULT_SETTINGS: PomodoroSettings = {
   workDuration: 25,
@@ -85,44 +95,80 @@ function getWeekData(): { day: string; date: string; count: number }[] {
   return result;
 }
 
+function loadLocalPomodoroState(): PomodoroState {
+  const today = getTodayKey();
+  let settings = DEFAULT_SETTINGS;
+  let history: PomodoroSession[] = [];
+  let taskName = "";
+  let todayCompleted = 0;
+  try { settings = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(LS_SETTINGS) || "{}") }; } catch { /* noop */ }
+  try { history = JSON.parse(localStorage.getItem(LS_HISTORY) || "[]"); } catch { /* noop */ }
+  try { taskName = localStorage.getItem(LS_TASK) || ""; } catch { /* noop */ }
+  try {
+    const lastDate = localStorage.getItem(LS_LAST_DATE);
+    todayCompleted = lastDate === today ? parseInt(localStorage.getItem(LS_TODAY_COUNT) || "0", 10) : 0;
+  } catch { /* noop */ }
+  return { settings, history, taskName, todayDate: today, todayCompleted };
+}
+
 /* ─────────────── main component ─────────────── */
 
 export default function Pomodoro() {
-  const [settings, setSettings] = useState<PomodoroSettings>(() => {
-    try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(LS_SETTINGS) || "{}") }; }
-    catch { return DEFAULT_SETTINGS; }
-  });
-  const [history, setHistory] = useState<PomodoroSession[]>(() => {
-    try { return JSON.parse(localStorage.getItem(LS_HISTORY) || "[]"); }
-    catch { return []; }
-  });
+  const [settings, setSettings] = useState<PomodoroSettings>(() => loadLocalPomodoroState().settings);
+  const [history, setHistory] = useState<PomodoroSession[]>(() => loadLocalPomodoroState().history);
 
   const [mode, setMode] = useState<TimerMode>("work");
   const [timeLeft, setTimeLeft] = useState(settings.workDuration * 60);
   const [isRunning, setIsRunning] = useState(false);
-  const [completedPomodoros, setCompletedPomodoros] = useState(() => {
-    const today = getTodayKey();
-    const lastDate = localStorage.getItem(LS_LAST_DATE);
-    if (lastDate !== today) {
-      localStorage.setItem(LS_LAST_DATE, today);
-      localStorage.setItem(LS_TODAY_COUNT, "0");
-      return 0;
-    }
-    return parseInt(localStorage.getItem(LS_TODAY_COUNT) || "0", 10);
-  });
+  const [completedPomodoros, setCompletedPomodoros] = useState(() => loadLocalPomodoroState().todayCompleted);
   const [sessionCount, setSessionCount] = useState(0); // since app opened
-  const [taskName, setTaskName] = useState(() => localStorage.getItem(LS_TASK) || "");
+  const [taskName, setTaskName] = useState(() => loadLocalPomodoroState().taskName);
   const [showSettings, setShowSettings] = useState(false);
   const [tempSettings, setTempSettings] = useState(settings);
   const [showCompletionPulse, setShowCompletionPulse] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  // Persist settings & history
-  useEffect(() => { localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); }, [settings]);
-  useEffect(() => { localStorage.setItem(LS_HISTORY, JSON.stringify(history)); }, [history]);
-  useEffect(() => { localStorage.setItem(LS_TASK, taskName); }, [taskName]);
-  useEffect(() => { localStorage.setItem(LS_TODAY_COUNT, String(completedPomodoros)); }, [completedPomodoros]);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback = loadLocalPomodoroState();
+        const state = await appStateClient.getOrDefault<PomodoroState>(POMODORO_APP_ID, fallback);
+        if (cancelled) return;
+        const today = getTodayKey();
+        setSettings({ ...DEFAULT_SETTINGS, ...(state.settings || fallback.settings) });
+        setHistory(Array.isArray(state.history) ? state.history : fallback.history);
+        setTaskName(typeof state.taskName === "string" ? state.taskName : fallback.taskName);
+        setCompletedPomodoros(state.todayDate === today && Number.isFinite(state.todayCompleted) ? state.todayCompleted : 0);
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<PomodoroState>(POMODORO_APP_ID, {
+        settings,
+        history,
+        taskName,
+        todayDate: getTodayKey(),
+        todayCompleted: completedPomodoros,
+      })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [settings, history, taskName, completedPomodoros, loaded]);
 
   const duration = useMemo(() => {
     switch (mode) {
@@ -383,6 +429,11 @@ export default function Pomodoro() {
             <Settings2 size={13} style={{ color: "var(--ink-500)" }} />
           </button>
         </div>
+        {syncError && (
+          <div className="text-caption mb-2 px-2 py-1 rounded" style={{ color: "var(--error)", backgroundColor: "rgba(179,57,47,0.08)" }}>
+            {syncError}
+          </div>
+        )}
 
         {/* Today's stats */}
         <div className="flex items-center gap-4 mb-2">

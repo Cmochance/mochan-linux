@@ -10,11 +10,12 @@ export class ApiError extends Error {
 }
 
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData;
   return fetch(path, {
     ...init,
     credentials: 'include',
     headers: {
-      ...(init?.body ? { 'content-type': 'application/json' } : {}),
+      ...(init?.body && !isFormData ? { 'content-type': 'application/json' } : {}),
       ...(init?.headers ?? {}),
     },
   });

@@ -1,11 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { RotateCcw, Undo2, Trophy, ArrowUp, ArrowDown, ArrowLeft, ArrowRight } from 'lucide-react';
+import { appStateClient } from '@/lib/app-state';
 
 type Board = (number | null)[][];
 type HistoryEntry = { board: Board; score: number };
 
 const GRID_SIZE = 4;
 const BEST_SCORE_KEY = 'puzzle2048_best_score';
+const APP_ID = 'puzzle2048';
+
+interface Puzzle2048State {
+  bestScore: number;
+}
 
 const TILE_COLORS: Record<number, { bg: string; text: string }> = {
   2: { bg: '#f0ebe4', text: '#2d2d2d' },
@@ -23,10 +29,6 @@ const TILE_COLORS: Record<number, { bg: string; text: string }> = {
 
 function getBestScore(): number {
   try { return Number(localStorage.getItem(BEST_SCORE_KEY)) || 0; } catch { return 0; }
-}
-
-function saveBestScore(score: number) {
-  try { localStorage.setItem(BEST_SCORE_KEY, String(score)); } catch { /* noop */ }
 }
 
 function createEmptyBoard(): Board {
@@ -137,14 +139,35 @@ function hasWon(board: Board): boolean {
 export default function Puzzle2048() {
   const [board, setBoard] = useState<Board>(initBoard);
   const [score, setScore] = useState(0);
-  const [bestScore, setBestScore] = useState(getBestScore);
+  const [bestScore, setBestScore] = useState(0);
   const [gameOver, setGameOver] = useState(false);
   const [won, setWon] = useState(false);
   const [wonContinue, setWonContinue] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [touchStart, setTouchStart] = useState<{ x: number; y: number } | null>(null);
   const boardRef = useRef(board);
+  const loadedRef = useRef(false);
   boardRef.current = board;
+
+  useEffect(() => {
+    let alive = true;
+    appStateClient.getOrDefault<Puzzle2048State>(APP_ID, { bestScore: getBestScore() })
+      .then(state => {
+        if (!alive) return;
+        setBestScore(Math.max(0, Number(state.bestScore) || 0));
+      })
+      .catch(err => console.error('Failed to load 2048 state:', err))
+      .finally(() => {
+        if (alive) loadedRef.current = true;
+      });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    appStateClient.put<Puzzle2048State>(APP_ID, { bestScore })
+      .catch(err => console.error('Failed to save 2048 state:', err));
+  }, [bestScore]);
 
   const saveToHistory = useCallback((currentBoard: Board, currentScore: number) => {
     setHistory(prev => [...prev.slice(-2), { board: cloneBoard(currentBoard), score: currentScore }]);
@@ -166,7 +189,6 @@ export default function Puzzle2048() {
     setScore(newScore);
     if (newScore > bestScore) {
       setBestScore(newScore);
-      saveBestScore(newScore);
     }
     if (!wonContinue && hasWon(finalBoard)) {
       setWon(true);

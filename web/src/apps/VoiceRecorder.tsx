@@ -1,16 +1,27 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, Square, Play, Pause, Download, Trash2, Clock } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
+import { saveMediaBlob, serverMediaURL } from '../lib/media-library';
+
+const VOICE_RECORDER_APP_ID = 'voicerecorder';
 
 interface Recording {
   id: string;
   name: string;
-  blob: Blob;
+  blob?: Blob;
   url: string;
+  path?: string;
+  type?: string;
+  size?: number;
   duration: number;
   timestamp: number;
 }
 
-type RecorderState = 'idle' | 'recording' | 'stopped' | 'playing';
+interface VoiceRecorderState {
+  recordings: Recording[];
+}
+
+type RecorderState = 'recording' | 'stopped' | 'playing';
 
 function formatTime(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -30,14 +41,50 @@ function generateId() {
   return Math.random().toString(36).substring(2, 9);
 }
 
+function audioExtension(type: string): string {
+  if (type.includes('webm')) return 'webm';
+  if (type.includes('ogg')) return 'ogg';
+  if (type.includes('mpeg') || type.includes('mp3')) return 'mp3';
+  if (type.includes('wav')) return 'wav';
+  return 'webm';
+}
+
+function loadLocalRecordings(): Recording[] {
+  try {
+    const saved = localStorage.getItem('voice_recordings_meta');
+    const recordings = saved ? JSON.parse(saved) : [];
+    return Array.isArray(recordings)
+      ? recordings
+          .filter(recording => recording.path || recording.url)
+          .map(recording => ({
+            ...recording,
+            url: serverMediaURL(recording.path, recording.url || ''),
+          }))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializableRecordings(recordings: Recording[]): Recording[] {
+  return recordings
+    .filter(recording => recording.path)
+    .map(({ blob: _blob, ...recording }) => ({
+      ...recording,
+      url: '',
+    }));
+}
+
 export default function VoiceRecorder() {
-  const [recorderState, setRecorderState] = useState<RecorderState>('idle');
-  const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [recorderState, setRecorderState] = useState<RecorderState>('stopped');
+  const [recordings, setRecordings] = useState<Recording[]>(loadLocalRecordings);
   const [recordingTime, setRecordingTime] = useState(0);
   const [playbackTime, setPlaybackTime] = useState(0);
   const [currentRecordingId, setCurrentRecordingId] = useState<string | null>(null);
   const [volume, setVolume] = useState(0.8);
   const [error, setError] = useState('');
+  const [syncError, setSyncError] = useState('');
+  const [loaded, setLoaded] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -51,30 +98,42 @@ export default function VoiceRecorder() {
   const timerRef = useRef<ReturnType<typeof setInterval>>(null);
   const recordingStartTimeRef = useRef<number>(0);
 
-  // Load recordings from localStorage on mount
+  // Server-backed recording metadata with a one-time localStorage migration fallback.
   useEffect(() => {
-    const saved = localStorage.getItem('voice_recordings_meta');
-    if (saved) {
+    let cancelled = false;
+    async function loadState() {
       try {
-        const metaList = JSON.parse(saved) as Omit<Recording, 'blob' | 'url'>[];
-        // We can't restore actual blobs from localStorage, so just show that recordings existed
-        // The recordings are kept in memory state only
-      } catch {
-        // ignore
+        const fallback = { recordings: loadLocalRecordings() };
+        const state = await appStateClient.getOrDefault<VoiceRecorderState>(VOICE_RECORDER_APP_ID, fallback);
+        if (cancelled) return;
+        setRecordings(Array.isArray(state.recordings)
+          ? state.recordings.map(recording => ({
+            ...recording,
+            url: serverMediaURL(recording.path, recording.url || ''),
+          }))
+          : fallback.recordings);
+        setSyncError('');
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
       }
     }
+    loadState();
+    return () => { cancelled = true; };
   }, []);
 
-  // Save recordings metadata to localStorage
   useEffect(() => {
-    const metaList = recordings.map(r => ({
-      id: r.id,
-      name: r.name,
-      duration: r.duration,
-      timestamp: r.timestamp,
-    }));
+    if (!loaded) return;
+    const metaList = serializableRecordings(recordings);
     localStorage.setItem('voice_recordings_meta', JSON.stringify(metaList));
-  }, [recordings]);
+    const timer = setTimeout(() => {
+      appStateClient.put<VoiceRecorderState>(VOICE_RECORDER_APP_ID, { recordings: metaList })
+        .then(() => setSyncError(''))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [recordings, loaded]);
 
   // Initialize audio context for visualizer
   const initAudioContext = useCallback(async () => {
@@ -105,7 +164,7 @@ export default function VoiceRecorder() {
     const bufferLength = analyser.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
-    if (recorderState === 'idle') {
+    if (recorderState === 'recording') {
       analyser.getByteTimeDomainData(dataArray);
     } else if (recorderState === 'playing' && audioRef.current) {
       analyser.getByteFrequencyData(dataArray);
@@ -113,7 +172,7 @@ export default function VoiceRecorder() {
 
     ctx.clearRect(0, 0, w, h);
 
-    if (recorderState === 'idle') {
+    if (recorderState === 'recording') {
       // Ink brush waveform
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#3d3d3d';
@@ -193,7 +252,7 @@ export default function VoiceRecorder() {
 
   // Start visualizer loop
   useEffect(() => {
-    if (recorderState === 'idle' || recorderState === 'playing') {
+    if (recorderState === 'recording' || recorderState === 'playing') {
       rafRef.current = requestAnimationFrame(drawWaveform);
     } else {
       drawWaveform(); // Draw idle state once
@@ -203,8 +262,7 @@ export default function VoiceRecorder() {
 
   // Recording timer
   useEffect(() => {
-    if (recorderState === 'idle') {
-      recordingStartTimeRef.current = Date.now();
+    if (recorderState === 'recording') {
       timerRef.current = setInterval(() => {
         setRecordingTime(Date.now() - recordingStartTimeRef.current);
       }, 30);
@@ -259,30 +317,54 @@ export default function VoiceRecorder() {
         }
       };
 
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-        const url = URL.createObjectURL(blob);
-        const duration = recordingTime / 1000;
-        const newRecording: Recording = {
-          id: generateId(),
-          name: `录音 ${new Date().toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\//g, '-')}`,
-          blob,
-          url,
-          duration,
-          timestamp: Date.now(),
-        };
-        setRecordings(prev => [newRecording, ...prev]);
-        setRecordingTime(0);
+      mediaRecorder.onstop = async () => {
+        const type = mediaRecorder.mimeType || 'audio/webm';
+        const blob = new Blob(audioChunksRef.current, { type });
+        const timestamp = Date.now();
+        const duration = Math.max(0, (timestamp - recordingStartTimeRef.current) / 1000);
+        const baseName = `录音 ${new Date(timestamp).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\//g, '-')}`;
+        const filename = `${baseName}.${audioExtension(type)}`;
 
-        // Stop stream
         stream.getTracks().forEach(track => track.stop());
         if (sourceRef.current) {
           sourceRef.current.disconnect();
           sourceRef.current = null;
         }
+
+        try {
+          const saved = await saveMediaBlob('audio', filename, blob, type);
+          const newRecording: Recording = {
+            id: generateId(),
+            name: baseName,
+            url: saved.url,
+            path: saved.path,
+            type,
+            size: saved.size || blob.size,
+            duration,
+            timestamp,
+          };
+          setRecordings(prev => [newRecording, ...prev]);
+          setError('');
+        } catch (err) {
+          const url = URL.createObjectURL(blob);
+          const newRecording: Recording = {
+            id: generateId(),
+            name: baseName,
+            blob,
+            url,
+            type,
+            size: blob.size,
+            duration,
+            timestamp,
+          };
+          setRecordings(prev => [newRecording, ...prev]);
+          setError(err instanceof Error ? err.message : String(err));
+        }
+        setRecordingTime(0);
       };
 
       mediaRecorder.start(100);
+      recordingStartTimeRef.current = Date.now();
       setRecorderState('recording');
       setRecordingTime(0);
     } catch {
@@ -291,7 +373,7 @@ export default function VoiceRecorder() {
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && recorderState === 'idle') {
+    if (mediaRecorderRef.current && recorderState === 'recording') {
       mediaRecorderRef.current.stop();
       setRecorderState('stopped');
     }
@@ -335,19 +417,19 @@ export default function VoiceRecorder() {
   const deleteRecording = (id: string) => {
     setRecordings(prev => {
       const rec = prev.find(r => r.id === id);
-      if (rec) URL.revokeObjectURL(rec.url);
+      if (rec?.url.startsWith('blob:')) URL.revokeObjectURL(rec.url);
       return prev.filter(r => r.id !== id);
     });
     if (currentRecordingId === id) {
       setCurrentRecordingId(null);
-      setRecorderState('idle');
+      setRecorderState('stopped');
     }
   };
 
   const downloadRecording = (recording: Recording) => {
     const link = document.createElement('a');
     link.href = recording.url;
-    link.download = `${recording.name}.wav`;
+    link.download = `${recording.name}.${audioExtension(recording.type || 'audio/webm')}`;
     link.click();
   };
 
@@ -372,6 +454,14 @@ export default function VoiceRecorder() {
           {error}
         </div>
       )}
+      {syncError && (
+        <div
+          className="px-4 py-1 text-caption text-center"
+          style={{ backgroundColor: 'rgba(179,57,47,0.08)', color: 'var(--cinnabar)' }}
+        >
+          同步失败：{syncError}
+        </div>
+      )}
 
       {/* Visualizer Area */}
       <div className="flex-shrink-0 px-4 pt-4">
@@ -393,12 +483,12 @@ export default function VoiceRecorder() {
         <div
           className="text-heading-lg font-mono"
           style={{
-            color: recorderState === 'idle' ? 'var(--cinnabar)' : 'var(--ink-700)',
+            color: recorderState === 'recording' ? 'var(--cinnabar)' : 'var(--ink-700)',
             fontFamily: "'Maple Mono CN', 'Courier New', monospace",
             fontVariantNumeric: 'tabular-nums',
           }}
         >
-          {recorderState === 'idle'
+          {recorderState === 'recording'
             ? formatTime(recordingTime)
             : recorderState === 'playing'
               ? formatTime(playbackTime)
@@ -406,9 +496,9 @@ export default function VoiceRecorder() {
           }
         </div>
         <div className="text-caption mt-1" style={{ color: 'var(--ink-400)' }}>
-          {recorderState === 'idle' ? '录音中 (Recording...)' :
+          {recorderState === 'recording' ? '录音中 (Recording...)' :
            recorderState === 'playing' ? '播放中 (Playing...)' :
-           recorderState === 'stopped' ? '就绪 (Ready)' : '等待开始 (Idle)'}
+           '就绪 (Ready)'}
         </div>
       </div>
 
@@ -424,7 +514,7 @@ export default function VoiceRecorder() {
               height: 56,
               backgroundColor: 'var(--cinnabar)',
               color: '#fff',
-              animation: recorderState === 'idle' ? 'pulse-record 1.5s infinite' : 'none',
+              animation: 'none',
             }}
             title="开始录音 (Record)"
           >
@@ -433,7 +523,7 @@ export default function VoiceRecorder() {
         )}
 
         {/* Stop Button */}
-        {recorderState === 'idle' && (
+        {recorderState === 'recording' && (
           <button
             onClick={stopRecording}
             className="flex items-center justify-center rounded-full transition-all duration-75 hover:scale-105 animate-pulse"

@@ -2,10 +2,17 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Camera as CameraIcon, FlipHorizontal, Grid3X3, Timer, Zap, Download, Trash2, X
 } from 'lucide-react';
+import { appendPhotoToLibrary, loadPhotoLibrary, saveMediaBlob } from '../lib/media-library';
 
 interface CapturedPhoto {
   id: string;
   url: string;
+  path?: string;
+  name: string;
+  width: number;
+  height: number;
+  size: number;
+  type: string;
   timestamp: number;
 }
 
@@ -13,6 +20,11 @@ type TimerOption = 0 | 3 | 5 | 10;
 
 function generateId() {
   return Math.random().toString(36).substring(2, 9);
+}
+
+async function dataURLToBlob(url: string): Promise<Blob> {
+  const res = await fetch(url);
+  return res.blob();
 }
 
 export default function Camera() {
@@ -25,6 +37,7 @@ export default function Camera() {
   const [photos, setPhotos] = useState<CapturedPhoto[]>([]);
   const [lightboxPhoto, setLightboxPhoto] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [selectedFilter, setSelectedFilter] = useState('none');
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -47,12 +60,33 @@ export default function Camera() {
     };
   }, []);
 
-  // Load saved photos from localStorage
+  // Load camera captures already saved into the shared Photo Album media library.
   useEffect(() => {
-    const saved = localStorage.getItem('camera_photos_count');
-    if (saved) {
-      // Photos are stored as blob URLs which can't persist, so we just note the count
+    let cancelled = false;
+    async function loadCaptures() {
+      try {
+        const state = await loadPhotoLibrary({ albums: [], photos: [] });
+        if (cancelled) return;
+        setPhotos(state.photos
+          .filter(photo => photo.source === 'camera')
+          .map(photo => ({
+            id: photo.id,
+            url: photo.url,
+            path: photo.path,
+            name: photo.name,
+            width: photo.width,
+            height: photo.height,
+            size: photo.size,
+            type: photo.type,
+            timestamp: photo.timestamp,
+          })));
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      }
     }
+    loadCaptures();
+    return () => { cancelled = true; };
   }, []);
 
   const startCamera = async () => {
@@ -131,20 +165,58 @@ export default function Camera() {
     ctx.filter = 'none';
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-    const url = canvas.toDataURL('image/png');
-    const newPhoto: CapturedPhoto = {
-      id: generateId(),
-      url,
-      timestamp: Date.now(),
-    };
+    const dataURL = canvas.toDataURL('image/png');
+    const timestamp = Date.now();
+    const name = `camera_${new Date(timestamp).toISOString().replace(/[:.]/g, '-')}.png`;
+    const blob = await dataURLToBlob(dataURL);
 
-    setPhotos(prev => [newPhoto, ...prev]);
-    localStorage.setItem('camera_photos_count', String(photos.length + 1));
+    try {
+      const saved = await saveMediaBlob('photos', name, blob, 'image/png');
+      const newPhoto: CapturedPhoto = {
+        id: generateId(),
+        url: saved.url,
+        path: saved.path,
+        name,
+        width: canvas.width,
+        height: canvas.height,
+        size: saved.size || blob.size,
+        type: 'image/png',
+        timestamp,
+      };
+      await appendPhotoToLibrary({
+        ...newPhoto,
+        source: 'camera',
+        albumId: 'all',
+        favorite: false,
+        exif: {
+          camera: 'Browser Camera',
+          aperture: '-',
+          shutter: '-',
+          iso: '-',
+          dateTaken: new Date(timestamp).toLocaleString('zh-CN'),
+        },
+      });
+      setPhotos(prev => [newPhoto, ...prev]);
+      setSyncError(null);
+    } catch (err) {
+      const newPhoto: CapturedPhoto = {
+        id: generateId(),
+        url: dataURL,
+        name,
+        width: canvas.width,
+        height: canvas.height,
+        size: blob.size,
+        type: 'image/png',
+        timestamp,
+      };
+      setPhotos(prev => [newPhoto, ...prev]);
+      setSyncError(err instanceof Error ? err.message : String(err));
+    }
 
     // Flash effect
     setFlashEffect(true);
     setTimeout(() => setFlashEffect(false), 200);
-  }, [timer, isMirror, selectedFilter, photos.length]);
+  }, [timer, isMirror, selectedFilter]);
 
   const deletePhoto = (id: string) => {
     setPhotos(prev => prev.filter(p => p.id !== id));
@@ -170,6 +242,14 @@ export default function Camera() {
           style={{ backgroundColor: 'rgba(179,57,47,0.9)', color: '#fff' }}
         >
           {error}
+        </div>
+      )}
+      {syncError && (
+        <div
+          className="absolute top-9 left-0 right-0 z-50 px-4 py-1 text-caption text-center"
+          style={{ backgroundColor: 'rgba(179,57,47,0.75)', color: '#fff' }}
+        >
+          保存到服务器失败：{syncError}
         </div>
       )}
 

@@ -3,10 +3,13 @@ import {
   Upload, Plus, Grid3X3, List, Star, StarOff, Trash2, X, ChevronLeft, ChevronRight,
   Play, Pause, Download, FolderPlus, Images, Clock, Info
 } from 'lucide-react';
+import { loadPhotoLibrary, saveMediaBlob, savePhotoLibrary } from '../lib/media-library';
 
 interface Photo {
   id: string;
   url: string;
+  path?: string;
+  source?: 'photoalbum' | 'camera';
   name: string;
   width: number;
   height: number;
@@ -42,6 +45,34 @@ function generateId() {
   return Math.random().toString(36).substring(2, 9);
 }
 
+function loadLocalAlbums(): Album[] {
+  try {
+    const saved = localStorage.getItem('photo_albums');
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadLocalPhotos(): Photo[] {
+  try {
+    const saved = localStorage.getItem('photos_meta');
+    const photos = saved ? JSON.parse(saved) : [];
+    return Array.isArray(photos) ? photos.filter(photo => photo.path || photo.url) : [];
+  } catch {
+    return [];
+  }
+}
+
+function readImageDimensions(url: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => reject(new Error('无法读取图片尺寸'));
+    img.src = url;
+  });
+}
+
 const DEFAULT_ALBUMS: Album[] = [
   { id: 'all', name: '全部照片 (All Photos)', createdAt: 0 },
   { id: 'favorites', name: '收藏 (Favorites)', createdAt: 0 },
@@ -63,8 +94,8 @@ function simulateEXIF(): Photo['exif'] {
 }
 
 export default function PhotoAlbum() {
-  const [photos, setPhotos] = useState<Photo[]>([]);
-  const [albums, setAlbums] = useState<Album[]>([]);
+  const [photos, setPhotos] = useState<Photo[]>(loadLocalPhotos);
+  const [albums, setAlbums] = useState<Album[]>(loadLocalAlbums);
   const [currentAlbumId, setCurrentAlbumId] = useState('all');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [sortBy, setSortBy] = useState<'date' | 'name'>('date');
@@ -75,63 +106,84 @@ export default function PhotoAlbum() {
   const [showCreateAlbum, setShowCreateAlbum] = useState(false);
   const [newAlbumName, setNewAlbumName] = useState('');
   const [dragOver, setDragOver] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slideshowTimerRef = useRef<ReturnType<typeof setInterval>>(null);
 
-  // Load from localStorage
+  // Server-backed media metadata with a one-time localStorage migration fallback.
   useEffect(() => {
-    const savedAlbums = localStorage.getItem('photo_albums');
-    if (savedAlbums) {
+    let cancelled = false;
+    async function loadState() {
       try {
-        setAlbums(JSON.parse(savedAlbums));
-      } catch { /* ignore */ }
+        const state = await loadPhotoLibrary({ albums: loadLocalAlbums(), photos: loadLocalPhotos() });
+        if (cancelled) return;
+        setAlbums(state.albums);
+        setPhotos(state.photos as Photo[]);
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
     }
-    const savedPhotosMeta = localStorage.getItem('photos_meta');
-    if (savedPhotosMeta) {
-      try {
-        const metaList = JSON.parse(savedPhotosMeta);
-        setPhotos(metaList);
-      } catch { /* ignore */ }
-    }
+    loadState();
+    return () => { cancelled = true; };
   }, []);
 
-  // Save to localStorage
   useEffect(() => {
+    if (!loaded) return;
     localStorage.setItem('photo_albums', JSON.stringify(albums));
-  }, [albums]);
-
-  useEffect(() => {
     localStorage.setItem('photos_meta', JSON.stringify(photos.map(p => ({
       ...p,
       url: '',
     }))));
-  }, [photos]);
+    const timer = setTimeout(() => {
+      savePhotoLibrary({ albums, photos })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [albums, photos, loaded]);
 
   const handleFileUpload = useCallback((files: FileList | null) => {
     if (!files) return;
     const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
-    imageFiles.forEach(file => {
-      const url = URL.createObjectURL(file);
-      const img = new window.Image();
-      img.onload = () => {
-        const newPhoto: Photo = {
-          id: generateId(),
-          url,
-          name: file.name,
-          width: img.naturalWidth,
-          height: img.naturalHeight,
-          size: file.size,
-          type: file.type,
-          timestamp: Date.now(),
-          albumId: currentAlbumId === 'favorites' || currentAlbumId === 'recent' ? 'all' : currentAlbumId,
-          favorite: false,
-          exif: simulateEXIF(),
-        };
-        setPhotos(prev => [newPhoto, ...prev]);
-      };
-      img.src = url;
-    });
+    void (async () => {
+      const uploaded: Photo[] = [];
+      for (const file of imageFiles) {
+        const previewURL = URL.createObjectURL(file);
+        try {
+          const dimensions = await readImageDimensions(previewURL);
+          const saved = await saveMediaBlob('photos', file.name, file, file.type);
+          const timestamp = Date.now();
+          const albumId = currentAlbumId === 'favorites' || currentAlbumId === 'recent' ? 'all' : currentAlbumId;
+          const newPhoto: Photo = {
+            id: generateId(),
+            url: saved.url,
+            path: saved.path,
+            source: 'photoalbum',
+            name: file.name,
+            width: dimensions.width,
+            height: dimensions.height,
+            size: saved.size || file.size,
+            type: file.type,
+            timestamp,
+            albumId,
+            favorite: false,
+            exif: simulateEXIF(),
+          };
+          uploaded.push(newPhoto);
+        } finally {
+          URL.revokeObjectURL(previewURL);
+        }
+      }
+      if (uploaded.length > 0) {
+        setPhotos(prev => [...uploaded, ...prev]);
+      }
+      setSyncError(null);
+    })().catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
   }, [currentAlbumId]);
 
   // Filter photos
@@ -171,7 +223,7 @@ export default function PhotoAlbum() {
   const deletePhoto = (photoId: string) => {
     setPhotos(prev => {
       const photo = prev.find(p => p.id === photoId);
-      if (photo) URL.revokeObjectURL(photo.url);
+      if (photo?.url.startsWith('blob:')) URL.revokeObjectURL(photo.url);
       return prev.filter(p => p.id !== photoId);
     });
     if (lightboxPhotoId === photoId) {
@@ -398,6 +450,12 @@ export default function PhotoAlbum() {
                 {filteredPhotos.length} 张照片
               </div>
             </div>
+
+            {syncError && (
+              <div className="px-4 py-1 text-caption" style={{ color: 'var(--cinnabar)', backgroundColor: 'var(--ink-100)' }}>
+                同步失败：{syncError}
+              </div>
+            )}
 
             {/* Photo Grid/List */}
             <div className="flex-1 overflow-y-auto p-4">

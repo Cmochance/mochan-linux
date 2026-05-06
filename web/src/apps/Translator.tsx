@@ -1,7 +1,9 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { ArrowRightLeft, Copy, Trash2, History, Languages, X, Volume2, Sparkles } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 const STORAGE_KEY_HISTORY = 'translator-history';
+const TRANSLATOR_APP_ID = 'translator';
 
 interface HistoryItem {
   id: string;
@@ -10,6 +12,10 @@ interface HistoryItem {
   sourceText: string;
   targetText: string;
   timestamp: number;
+}
+
+interface TranslatorState {
+  history: HistoryItem[];
 }
 
 interface LangEntry {
@@ -199,22 +205,56 @@ const TRANSLATIONS_ZH_EN: Record<string, string> = {
   '公共': 'public', '私人': 'private', '安全': 'safe', '危险': 'dangerous',
 };
 
+function loadLocalHistory(): HistoryItem[] {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY_HISTORY) || '[]'); } catch { return []; }
+}
+
 export default function Translator() {
   const [sourceLang, setSourceLang] = useState('zh');
   const [targetLang, setTargetLang] = useState('en');
   const [sourceText, setSourceText] = useState('');
   const [targetText, setTargetText] = useState('');
-  const [history, setHistory] = useState<HistoryItem[]>(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_HISTORY) || '[]'); } catch { return []; }
-  });
+  const [history, setHistory] = useState<HistoryItem[]>(loadLocalHistory);
   const [showHistory, setShowHistory] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const langMap = useMemo(() => {
     const map: Record<string, LangEntry> = {};
     LANGUAGES.forEach(l => map[l.code] = l);
     return map;
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback = { history: loadLocalHistory() };
+        const state = await appStateClient.getOrDefault<TranslatorState>(TRANSLATOR_APP_ID, fallback);
+        if (cancelled) return;
+        setHistory(Array.isArray(state.history) ? state.history : fallback.history);
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(history));
+    const timer = setTimeout(() => {
+      appStateClient.put<TranslatorState>(TRANSLATOR_APP_ID, { history })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [history, loaded]);
 
   const translate = useCallback(() => {
     if (!sourceText.trim()) { setTargetText(''); return; }
@@ -291,7 +331,6 @@ export default function Translator() {
     };
     setHistory(prev => {
       const next = [item, ...prev].slice(0, 20);
-      try { localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(next)); } catch { /* noop */ }
       return next;
     });
   };
@@ -327,7 +366,6 @@ export default function Translator() {
   const handleDeleteHistory = (id: string) => {
     setHistory(prev => {
       const next = prev.filter(h => h.id !== id);
-      try { localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(next)); } catch { /* noop */ }
       return next;
     });
   };
@@ -367,6 +405,12 @@ export default function Translator() {
         >
           {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
         </select>
+
+        {syncError && (
+          <span className="text-caption" style={{ color: 'var(--cinnabar)' }}>
+            同步失败：{syncError}
+          </span>
+        )}
 
         <div className="flex-1" />
 

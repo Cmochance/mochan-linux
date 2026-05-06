@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { RotateCcw, Pause, Play, Trophy, Zap, ArrowUp, ArrowDown, ArrowLeft, ArrowRight } from 'lucide-react';
+import { appStateClient } from '@/lib/app-state';
 
 type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
 type Position = { x: number; y: number };
@@ -8,13 +9,14 @@ type Difficulty = 'easy' | 'medium' | 'hard';
 const GRID_SIZE = 20;
 const DIFFICULTY_SPEED: Record<Difficulty, number> = { easy: 180, medium: 130, hard: 90 };
 const HIGH_SCORE_KEY = 'snake_high_score';
+const APP_ID = 'snake';
+
+interface SnakeState {
+  highScore: number;
+}
 
 function getHighScore(): number {
   try { return Number(localStorage.getItem(HIGH_SCORE_KEY)) || 0; } catch { return 0; }
-}
-
-function saveHighScore(score: number) {
-  try { localStorage.setItem(HIGH_SCORE_KEY, String(score)); } catch { /* noop */ }
 }
 
 function randomFood(exclude: Position[]): Position {
@@ -30,7 +32,7 @@ export default function Snake() {
   const [direction, setDirection] = useState<Direction>('RIGHT');
   const [food, setFood] = useState<Position>(() => randomFood([{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }]));
   const [score, setScore] = useState(0);
-  const [highScore, setHighScore] = useState(getHighScore);
+  const [highScore, setHighScore] = useState(0);
   const [gameOver, setGameOver] = useState(false);
   const [paused, setPaused] = useState(false);
   const [difficulty, setDifficulty] = useState<Difficulty>('medium');
@@ -39,9 +41,32 @@ export default function Snake() {
   const gameLoopRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const snakeRef = useRef<Position[]>(snake);
   const scoreRef = useRef(0);
+  const highScoreRef = useRef(0);
+  const loadedRef = useRef(false);
 
   snakeRef.current = snake;
   scoreRef.current = score;
+  highScoreRef.current = highScore;
+
+  useEffect(() => {
+    let alive = true;
+    appStateClient.getOrDefault<SnakeState>(APP_ID, { highScore: getHighScore() })
+      .then(state => {
+        if (!alive) return;
+        setHighScore(Math.max(0, Number(state.highScore) || 0));
+      })
+      .catch(err => console.error('Failed to load snake state:', err))
+      .finally(() => {
+        if (alive) loadedRef.current = true;
+      });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    appStateClient.put<SnakeState>(APP_ID, { highScore })
+      .catch(err => console.error('Failed to save snake state:', err));
+  }, [highScore]);
 
   const resetGame = useCallback(() => {
     const initialSnake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
@@ -57,8 +82,7 @@ export default function Snake() {
 
   const handleGameOver = useCallback(() => {
     setGameOver(true);
-    if (scoreRef.current > getHighScore()) {
-      saveHighScore(scoreRef.current);
+    if (scoreRef.current > highScoreRef.current) {
       setHighScore(scoreRef.current);
     }
   }, []);

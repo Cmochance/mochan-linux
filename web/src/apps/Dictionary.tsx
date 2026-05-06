@@ -3,6 +3,7 @@ import {
   Search, X, Star, History, Shuffle, BookOpen, ChevronRight,
   Volume2, Bookmark, Trash2, Copy, Check, Sparkles
 } from 'lucide-react';
+import { appStateClient } from '../lib/app-state';
 
 /* ─────────────── types ─────────────── */
 
@@ -401,6 +402,22 @@ const LS_FAVORITES = "inkos_dict_favorites";
 const LS_HISTORY = "inkos_dict_history";
 const LS_WORD_DAY = "inkos_dict_wordofday";
 const LS_WORD_DAY_DATE = "inkos_dict_wordofday_date";
+const DICTIONARY_APP_ID = "dictionary";
+
+interface DictionaryState {
+  favorites: string[];
+  history: { word: string; time: number }[];
+  wordOfDay?: string;
+  wordOfDayDate?: string;
+}
+
+function loadLocalFavorites(): string[] {
+  try { return JSON.parse(localStorage.getItem(LS_FAVORITES) || "[]"); } catch { return []; }
+}
+
+function loadLocalHistory(): { word: string; time: number }[] {
+  try { return JSON.parse(localStorage.getItem(LS_HISTORY) || "[]"); } catch { return []; }
+}
 
 /* ─────────────── helper components ─────────────── */
 
@@ -436,20 +453,47 @@ export default function Dictionary() {
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"search" | "history" | "favorites" | "wordofday">("search");
   const [selectedEntry, setSelectedEntry] = useState<DictEntry | null>(null);
-  const [favorites, setFavorites] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem(LS_FAVORITES) || "[]"); } catch { return []; }
-  });
-  const [history, setHistory] = useState<{ word: string; time: number }[]>(() => {
-    try { return JSON.parse(localStorage.getItem(LS_HISTORY) || "[]"); } catch { return []; }
-  });
+  const [favorites, setFavorites] = useState<string[]>(loadLocalFavorites);
+  const [history, setHistory] = useState<{ word: string; time: number }[]>(loadLocalHistory);
   const [activeCategory, setActiveCategory] = useState("All");
   const [copied, setCopied] = useState(false);
   const [suggestions, setSuggestions] = useState<DictEntry[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Word of the day
   const [wordOfDay, setWordOfDay] = useState<DictEntry | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadState() {
+      try {
+        const fallback: DictionaryState = {
+          favorites: loadLocalFavorites(),
+          history: loadLocalHistory(),
+          wordOfDay: localStorage.getItem(LS_WORD_DAY) || undefined,
+          wordOfDayDate: localStorage.getItem(LS_WORD_DAY_DATE) || undefined,
+        };
+        const state = await appStateClient.getOrDefault<DictionaryState>(DICTIONARY_APP_ID, fallback);
+        if (cancelled) return;
+        setFavorites(Array.isArray(state.favorites) ? state.favorites : fallback.favorites);
+        setHistory(Array.isArray(state.history) ? state.history : fallback.history);
+        const entry = UNIQUE_DICT.find(e => e.word === state.wordOfDay);
+        if (entry && state.wordOfDayDate === new Date().toDateString()) {
+          setWordOfDay(entry);
+        }
+        setSyncError(null);
+      } catch (err) {
+        if (!cancelled) setSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    }
+    loadState();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const today = new Date().toDateString();
@@ -471,6 +515,21 @@ export default function Dictionary() {
   // Persist favorites & history
   useEffect(() => { localStorage.setItem(LS_FAVORITES, JSON.stringify(favorites)); }, [favorites]);
   useEffect(() => { localStorage.setItem(LS_HISTORY, JSON.stringify(history)); }, [history]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      appStateClient.put<DictionaryState>(DICTIONARY_APP_ID, {
+        favorites,
+        history,
+        wordOfDay: wordOfDay?.word,
+        wordOfDayDate: wordOfDay ? new Date().toDateString() : undefined,
+      })
+        .then(() => setSyncError(null))
+        .catch(err => setSyncError(err instanceof Error ? err.message : String(err)));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [favorites, history, wordOfDay, loaded]);
 
   const filtered = useMemo(() => {
     if (!query.trim() && activeCategory === "All") return [];
@@ -612,6 +671,11 @@ export default function Dictionary() {
             </button>
           ))}
         </div>
+        {syncError && (
+          <div className="mt-1 text-[10px]" style={{ color: "var(--cinnabar)" }}>
+            同步失败：{syncError}
+          </div>
+        )}
       </div>
 
       {/* Main Content */}

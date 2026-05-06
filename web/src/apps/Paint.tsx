@@ -1,22 +1,43 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   Paintbrush, Pen, Eraser, Minus, Square, Circle, Grid3X3,
-  Undo2, Redo2, Trash2, Download, Plus, MinusIcon
+  Undo2, Redo2, Trash2, Download, Save, FolderOpen, Server
 } from 'lucide-react';
+import { appStateClient } from '@/lib/app-state';
+import { saveMediaBlob, serverMediaURL } from '@/lib/media-library';
+import { basename } from '@/lib/openFile';
 
 type Tool = 'brush' | 'pencil' | 'eraser' | 'line' | 'rect' | 'circle';
 
 interface Point { x: number; y: number }
+
+interface DrawingRecord {
+  id: string;
+  name: string;
+  path: string;
+  url: string;
+  timestamp: number;
+  size: number;
+}
+
+interface PaintState {
+  tool: Tool;
+  color: string;
+  brushSize: number;
+  showGrid: boolean;
+  recentDrawings: DrawingRecord[];
+}
 
 const COLORS = [
   '#1a1a1a', '#2d2d2d', '#5c5c5c', '#9e9e9e', '#d9d9d9', '#ffffff',
   '#b3392f', '#c94a3f', '#8a2a22', '#4a7c59', '#5a7a8a', '#b8860b',
 ];
 
-const STORAGE_KEY_HISTORY = 'paint-history';
+const APP_ID = 'paint';
 
 export default function Paint() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [tool, setTool] = useState<Tool>('brush');
   const [color, setColor] = useState('#1a1a1a');
   const [brushSize, setBrushSize] = useState(3);
@@ -24,8 +45,11 @@ export default function Paint() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [history, setHistory] = useState<ImageData[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [recentDrawings, setRecentDrawings] = useState<DrawingRecord[]>([]);
+  const [statusText, setStatusText] = useState('正在加载绘图状态...');
   const startPos = useRef<Point | null>(null);
   const currentPos = useRef<Point | null>(null);
+  const loadedRef = useRef(false);
 
   const CANVAS_W = 800;
   const CANVAS_H = 560;
@@ -42,6 +66,51 @@ export default function Paint() {
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
     saveHistory();
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const saved = await appStateClient.getOrDefault<PaintState>(APP_ID, {
+          tool: 'brush',
+          color: '#1a1a1a',
+          brushSize: 3,
+          showGrid: false,
+          recentDrawings: [],
+        });
+        if (!alive) return;
+        if (saved.tool) setTool(saved.tool);
+        if (saved.color) setColor(saved.color);
+        if (typeof saved.brushSize === 'number') setBrushSize(saved.brushSize);
+        setShowGrid(Boolean(saved.showGrid));
+        setRecentDrawings(Array.isArray(saved.recentDrawings)
+          ? saved.recentDrawings.map(record => ({ ...record, url: serverMediaURL(record.path, record.url) })).slice(0, 8)
+          : []);
+        setStatusText('绘图状态已载入');
+      } catch (err) {
+        if (!alive) return;
+        console.error('Failed to load paint state:', err);
+        setStatusText('绘图状态加载失败，请确认后端状态接口可用');
+      } finally {
+        if (alive) loadedRef.current = true;
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      appStateClient.put<PaintState>(APP_ID, {
+        tool,
+        color,
+        brushSize,
+        showGrid,
+        recentDrawings: recentDrawings.map(record => ({ ...record, url: '' })),
+      }).catch(err => console.error('Failed to save paint state:', err));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [tool, color, brushSize, showGrid, recentDrawings]);
 
   const saveHistory = useCallback(() => {
     const canvas = canvasRef.current;
@@ -182,7 +251,69 @@ export default function Paint() {
     saveHistory();
   };
 
-  const handleSave = () => {
+  const drawImageToCanvas = useCallback((url: string, name: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const image = new Image();
+    image.onload = () => {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const scale = Math.min(canvas.width / image.width, canvas.height / image.height);
+      const width = image.width * scale;
+      const height = image.height * scale;
+      const x = (canvas.width - width) / 2;
+      const y = (canvas.height - height) / 2;
+      ctx.drawImage(image, x, y, width, height);
+      saveHistory();
+      setStatusText(`已打开 ${name}`);
+    };
+    image.onerror = () => setStatusText(`无法打开图片: ${name}`);
+    image.src = url;
+  }, [saveHistory]);
+
+  const handleOpenLocalImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    drawImageToCanvas(URL.createObjectURL(file), file.name);
+    e.target.value = '';
+  };
+
+  const handleOpenServerImage = () => {
+    const path = window.prompt('输入服务器上的图片绝对路径');
+    if (!path) return;
+    drawImageToCanvas(serverMediaURL(path.trim()), basename(path.trim()));
+  };
+
+  const handleSave = async () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    setStatusText('正在保存绘图到服务器...');
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) {
+      setStatusText('无法生成 PNG 文件');
+      return;
+    }
+    try {
+      const saved = await saveMediaBlob('drawings', 'drawing.png', blob, 'image/png');
+      const record: DrawingRecord = {
+        id: saved.path,
+        name: basename(saved.path),
+        path: saved.path,
+        url: saved.url,
+        timestamp: Date.now(),
+        size: saved.size,
+      };
+      setRecentDrawings(prev => [record, ...prev.filter(item => item.path !== record.path)].slice(0, 8));
+      setStatusText(`已保存到服务器: ${record.path}`);
+    } catch (err) {
+      console.error('Failed to save drawing:', err);
+      setStatusText('绘图保存失败，请确认后端文件接口可用');
+    }
+  };
+
+  const handleDownloadCopy = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const url = canvas.toDataURL('image/png');
@@ -245,9 +376,22 @@ export default function Paint() {
         <button onClick={handleClear} className="p-1 rounded hover:opacity-80" style={{ color: 'var(--cinnabar)' }} title="清空 (Clear)">
           <Trash2 size={14} />
         </button>
-        <button onClick={handleSave} className="p-1 rounded hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="保存 PNG (Save)">
+        <button onClick={handleSave} className="p-1 rounded hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="保存到服务器 (Save to server)">
+          <Save size={14} />
+        </button>
+        <button onClick={handleDownloadCopy} className="p-1 rounded hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="下载本地副本 (Download copy)">
           <Download size={14} />
         </button>
+
+        <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--ink-300)' }} />
+
+        <button onClick={() => fileInputRef.current?.click()} className="p-1 rounded hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="打开本地图片 (Open local image)">
+          <FolderOpen size={14} />
+        </button>
+        <button onClick={handleOpenServerImage} className="p-1 rounded hover:opacity-80" style={{ color: 'var(--ink-700)' }} title="打开服务器图片路径 (Open server image)">
+          <Server size={14} />
+        </button>
+        <input ref={fileInputRef} type="file" accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp" className="hidden" onChange={handleOpenLocalImage} />
 
         <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--ink-300)' }} />
 
@@ -261,6 +405,7 @@ export default function Paint() {
         </button>
 
         <div className="flex-1" />
+        <span className="text-caption truncate max-w-[260px]" style={{ color: 'var(--ink-500)' }}>{statusText}</span>
       </div>
 
       {/* Canvas Area */}
@@ -279,6 +424,19 @@ export default function Paint() {
               title={c}
             />
           ))}
+          {recentDrawings.length > 0 && (
+            <div className="mt-2 pt-2 border-t flex flex-col gap-1" style={{ borderColor: 'var(--ink-200)' }}>
+              {recentDrawings.slice(0, 4).map(record => (
+                <button
+                  key={record.path}
+                  onClick={() => drawImageToCanvas(record.url, record.name)}
+                  className="w-6 h-6 rounded border overflow-hidden"
+                  style={{ borderColor: 'var(--ink-300)', backgroundImage: `url(${record.url})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+                  title={record.name}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Canvas */}

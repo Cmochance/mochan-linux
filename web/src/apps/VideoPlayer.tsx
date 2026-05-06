@@ -3,15 +3,30 @@ import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Maximize,
   Minimize, Settings, Upload, ChevronDown
 } from 'lucide-react';
+import { appStateClient } from '@/lib/app-state';
+import { listMediaFiles, saveMediaBlob, serverMediaURL, type MediaLibraryFile } from '@/lib/media-library';
+import { basename, usePayloadPath } from '@/lib/openFile';
 
 interface VideoFile {
   id: string;
-  file: File;
   url: string;
+  path?: string;
   name: string;
+  size?: number;
+  mtime?: number;
+}
+
+interface VideoPlayerState {
+  videos: VideoFile[];
+  currentIndex: number;
+  volume: number;
+  isMuted: boolean;
+  playbackSpeed: number;
 }
 
 const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+const APP_ID = 'videoplayer';
+const VIDEO_EXTENSIONS = ['mp4', 'webm', 'ogv', 'mov', 'mkv'] as const;
 
 function formatTime(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return '0:00';
@@ -26,7 +41,56 @@ function generateId() {
   return Math.random().toString(36).substring(2, 9);
 }
 
-export default function VideoPlayer() {
+function isVideoName(name: string): boolean {
+  const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+  return VIDEO_EXTENSIONS.includes(ext as typeof VIDEO_EXTENSIONS[number]);
+}
+
+function fromLibraryFile(file: MediaLibraryFile): VideoFile {
+  return {
+    id: file.path,
+    path: file.path,
+    url: file.url,
+    name: file.name,
+    size: file.size,
+    mtime: file.mtime,
+  };
+}
+
+function normalizeVideos(videos: VideoFile[] | undefined): VideoFile[] {
+  if (!Array.isArray(videos)) return [];
+  return videos
+    .filter(video => video && (video.path || video.url))
+    .map(video => ({
+      ...video,
+      id: video.path || video.id || generateId(),
+      url: serverMediaURL(video.path, video.url),
+      name: video.name || (video.path ? basename(video.path) : 'Untitled video'),
+    }));
+}
+
+function serializeVideos(videos: VideoFile[]): VideoFile[] {
+  return videos
+    .filter(video => video.path)
+    .map(video => ({
+      ...video,
+      url: '',
+    }));
+}
+
+function mergeVideos(primary: VideoFile[], secondary: VideoFile[]): VideoFile[] {
+  const seen = new Set<string>();
+  const merged: VideoFile[] = [];
+  for (const video of [...primary, ...secondary]) {
+    const key = video.path || video.id;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(video);
+  }
+  return merged;
+}
+
+export default function VideoPlayer({ windowId }: { windowId?: string }) {
   const [videos, setVideos] = useState<VideoFile[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -40,13 +104,86 @@ export default function VideoPlayer() {
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [buffered, setBuffered] = useState(0);
   const [dragOver, setDragOver] = useState(false);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(true);
+  const [libraryMessage, setLibraryMessage] = useState('');
+  const [isSavingFiles, setIsSavingFiles] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const loadedRef = useRef(false);
+  const payloadPath = usePayloadPath(windowId);
 
   const currentVideo = videos[currentIndex];
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const fallback: VideoPlayerState = {
+          videos: [],
+          currentIndex: 0,
+          volume: 0.8,
+          isMuted: false,
+          playbackSpeed: 1,
+        };
+        const [saved, files] = await Promise.all([
+          appStateClient.getOrDefault<VideoPlayerState>(APP_ID, fallback),
+          listMediaFiles('videos', VIDEO_EXTENSIONS),
+        ]);
+        if (!alive) return;
+        const merged = mergeVideos(normalizeVideos(saved.videos), files.map(fromLibraryFile));
+        setVideos(merged);
+        setCurrentIndex(Math.min(Math.max(saved.currentIndex || 0, 0), Math.max(merged.length - 1, 0)));
+        setVolume(typeof saved.volume === 'number' ? saved.volume : 0.8);
+        setIsMuted(Boolean(saved.isMuted));
+        setPlaybackSpeed(PLAYBACK_SPEEDS.includes(saved.playbackSpeed) ? saved.playbackSpeed : 1);
+        setLibraryMessage(merged.length > 0 ? `已载入 ${merged.length} 个服务器视频` : '服务器视频库为空');
+      } catch (err) {
+        if (!alive) return;
+        console.error('Failed to load video library:', err);
+        setLibraryMessage('视频库加载失败，请确认后端文件接口可用');
+      } finally {
+        if (alive) {
+          loadedRef.current = true;
+          setIsLoadingLibrary(false);
+        }
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!loadedRef.current || !payloadPath || !isVideoName(payloadPath)) return;
+    setVideos(prev => {
+      if (prev.some(video => video.path === payloadPath)) return prev;
+      return [
+        {
+          id: payloadPath,
+          path: payloadPath,
+          url: serverMediaURL(payloadPath),
+          name: basename(payloadPath),
+        },
+        ...prev,
+      ];
+    });
+    setCurrentIndex(0);
+  }, [payloadPath]);
+
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      appStateClient.put<VideoPlayerState>(APP_ID, {
+        videos: serializeVideos(videos),
+        currentIndex: Math.min(currentIndex, Math.max(videos.length - 1, 0)),
+        volume,
+        isMuted,
+        playbackSpeed,
+      }).catch(err => console.error('Failed to save video player state:', err));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [videos, currentIndex, volume, isMuted, playbackSpeed]);
 
   // Auto-hide controls
   const resetControlsTimeout = useCallback(() => {
@@ -109,18 +246,34 @@ export default function VideoPlayer() {
     }
   }, [playbackSpeed]);
 
-  const handleFileUpload = (files: FileList | null) => {
+  const handleFileUpload = async (files: FileList | null) => {
     if (!files) return;
     const videoFiles = Array.from(files).filter(f =>
-      f.type.startsWith('video/') || f.name.endsWith('.mp4') || f.name.endsWith('.webm') || f.name.endsWith('.ogg')
+      f.type.startsWith('video/') || isVideoName(f.name)
     );
-    const newVideos: VideoFile[] = videoFiles.map(file => ({
-      id: generateId(),
-      file,
-      url: URL.createObjectURL(file),
-      name: file.name,
-    }));
-    setVideos(prev => [...prev, ...newVideos]);
+    if (videoFiles.length === 0) return;
+    setIsSavingFiles(true);
+    setLibraryMessage('正在保存视频到服务器...');
+    try {
+      const newVideos: VideoFile[] = [];
+      for (const file of videoFiles) {
+        const saved = await saveMediaBlob('videos', file.name, file, file.type);
+        newVideos.push({
+          id: saved.path,
+          path: saved.path,
+          url: saved.url,
+          name: file.name,
+          size: saved.size,
+        });
+      }
+      setVideos(prev => mergeVideos([...prev, ...newVideos], []));
+      setLibraryMessage(`已保存 ${newVideos.length} 个视频到服务器`);
+    } catch (err) {
+      console.error('Failed to save video files:', err);
+      setLibraryMessage('视频保存失败，请确认后端文件接口可用');
+    } finally {
+      setIsSavingFiles(false);
+    }
   };
 
   const togglePlay = () => {
@@ -207,15 +360,21 @@ export default function VideoPlayer() {
           </div>
         )}
         <Upload size={48} style={{ color: 'var(--ink-400)' }} />
-        <p className="mt-4 text-body-md" style={{ color: 'var(--ink-400)' }}>拖入视频文件或点击上传</p>
+        <p className="mt-4 text-body-md" style={{ color: 'var(--ink-400)' }}>
+          {isLoadingLibrary ? '正在加载服务器视频库' : '拖入视频文件或点击上传'}
+        </p>
         <p className="text-body-sm" style={{ color: 'var(--ink-500)' }}>Drop video files or click to upload</p>
         <button
           onClick={() => fileInputRef.current?.click()}
+          disabled={isSavingFiles}
           className="mt-6 px-6 py-2 rounded text-body-md transition-all duration-75 hover:scale-[1.02]"
-          style={{ backgroundColor: 'var(--ink-700)', color: 'var(--ink-50)' }}
+          style={{ backgroundColor: 'var(--ink-700)', color: 'var(--ink-50)', opacity: isSavingFiles ? 0.7 : 1 }}
         >
-          选择视频 (Select Video)
+          {isSavingFiles ? '保存中...' : '选择视频 (Select Video)'}
         </button>
+        {libraryMessage && (
+          <p className="mt-4 text-caption" style={{ color: 'var(--ink-500)' }}>{libraryMessage}</p>
+        )}
         <input
           ref={fileInputRef}
           type="file"
@@ -238,7 +397,16 @@ export default function VideoPlayer() {
       style={{ backgroundColor: '#000000' }}
       onMouseMove={resetControlsTimeout}
       onMouseLeave={() => isPlaying && setShowControls(false)}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFileUpload(e.dataTransfer.files); }}
     >
+      {dragOver && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center border-2 border-dashed"
+          style={{ backgroundColor: 'rgba(179,57,47,0.15)', borderColor: 'var(--cinnabar)' }}>
+          <p className="text-body-lg" style={{ color: 'var(--cinnabar)' }}>拖入视频文件 (Drop video files)</p>
+        </div>
+      )}
       {/* Video Element */}
       <div className="flex-1 relative flex items-center justify-center">
         <video
@@ -426,8 +594,30 @@ export default function VideoPlayer() {
             >
               {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
             </button>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isSavingFiles}
+              className="p-1.5 transition-all duration-75 disabled:opacity-50"
+              style={{ color: '#fff' }}
+              title="添加视频 (Add Video)"
+            >
+              <Upload size={16} />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="video/*,.mp4,.webm,.ogg,.ogv,.mov,.mkv"
+              multiple
+              className="hidden"
+              onChange={(e) => handleFileUpload(e.target.files)}
+            />
           </div>
         </div>
+        {libraryMessage && (
+          <div className="px-4 pb-2 text-caption truncate" style={{ color: 'rgba(255,255,255,0.65)' }}>
+            {currentVideo.name} · {libraryMessage}
+          </div>
+        )}
       </div>
     </div>
   );
