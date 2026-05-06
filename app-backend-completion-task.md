@@ -521,6 +521,7 @@ For production updates, follow the repository's Git-backed workflow:
 - 2026-05-06: Completed P13 by migrating Notes from browser-local save behavior to app-state under `notes`, preserving pinned, color, search, edit, and delete behavior with one-time localStorage fallback.
 - 2026-05-06: Completed P14 by migrating Calendar events to app-state under `calendar` and adding `.ics` import/export over the same server-backed event list.
 - 2026-05-06: Completed P15 by migrating Notebook notebooks, rich notes, tags, starred state, and archived state to app-state under `notebook`, with localStorage used only as a migration fallback.
+- 2026-05-06: Prepared the v1.0.1 documentation release by regenerating README preview screenshots, adding an app backend completion summary through P15, and documenting the remaining queued backend apps without changing runtime code.
 
 ## Validation Results
 
@@ -549,6 +550,8 @@ For production updates, follow the repository's Git-backed workflow:
 - 2026-05-06: P11-P15 cumulative backend vet passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go vet ./...`.
 - 2026-05-06: P11-P15 cumulative backend validation passed with `cd server && GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache go test ./...` after rerunning outside the sandbox because existing `httptest` suites must bind loopback listeners.
 - 2026-05-06: P11-P15 frontend embedding and binary validation passed with `GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache make build VERSION="1.0.0+p11-p15"`; the existing Vite large chunk warning remains.
+- 2026-05-06: v1.0.1 documentation release screenshots were generated from a local Vite preview backed by the local Go server and saved under `docs/img/`.
+- 2026-05-06: v1.0.1 documentation release validation passed with `cd web && npm run build` and `GOCACHE=/Users/alysechen/alysechen/github/mochan-linux/.tmp/go-cache make build VERSION="v1.0.1-docs"`; the existing Vite large chunk warning remains.
 
 ## Next Implementation Plan: P16 Spreadsheet
 
