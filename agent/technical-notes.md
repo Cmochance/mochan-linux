@@ -52,7 +52,14 @@
 - Downloads run in background goroutines, stream into `.part` files, and rename into the final output path only after successful completion. Restarted queued or active jobs are marked failed so stale in-progress metadata is not misleading.
 - Completed output files are opened through `/api/fs/download?path=...`; deleting a completed download row removes only download metadata, not the saved file.
 - The downloader uses the same guardrail direction as the Browser proxy: HTTP/HTTPS only, no URL credentials, cloud metadata hostnames blocked, and link-local or known metadata addresses blocked before dialing.
+- When a job is created without an explicit `file_name`, the downloader may replace the URL-derived filename with a safe `Content-Disposition` attachment filename after receiving response headers.
 - Audit events are `download.create`, `download.cancel`, `download.retry`, and `download.delete`.
+
+## Browser Download Integration
+
+- Browser current-page downloads and file-like proxied iframe links enqueue jobs through `/api/downloads/`; the Browser proxy remains a preview path with its existing memory cap and script-disabled sandbox.
+- File-like iframe link interception currently covers HTTP/HTTPS anchors with a `download` attribute or a known archive, installer, document, media, image, or binary extension.
+- Browser-started downloads do not forward remote cookies, JavaScript blob contents, POST form bodies, or authenticated third-party browser sessions. Those would need a separate session-aware download design.
 
 ## Server-Side API Tester
 

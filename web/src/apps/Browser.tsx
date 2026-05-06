@@ -3,9 +3,11 @@ import {
   ArrowLeft, ArrowRight, RotateCw, Home, Star, Lock, Globe,
   Plus, X, Clock, Bookmark, Search,
   CloudRain, Sun, Cloud, Music, Video, ShoppingCart,
-  Code2, Palette, MessageSquare, Newspaper
+  Code2, Palette, MessageSquare, Newspaper, Download as DownloadIcon
 } from 'lucide-react';
 import { bookmarksClient, type BookmarkItem } from '@/lib/bookmarks';
+import { downloadsClient } from '@/lib/downloads';
+import { useWindowStore } from '@/stores/useWindowStore';
 
 interface Tab {
   id: string;
@@ -91,6 +93,13 @@ const MOCK_SEARCH_RESULTS = [
 let tabCounter = 0;
 
 const BROWSER_PROXY_PATH = '/api/browser/proxy';
+const DOWNLOAD_EXTENSIONS = [
+  '.zip', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2', '.xz',
+  '.dmg', '.pkg', '.exe', '.msi', '.apk', '.deb', '.rpm',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.mp3', '.wav', '.flac', '.ogg', '.mp4', '.webm', '.mov', '.mkv',
+  '.iso', '.img', '.bin',
+];
 
 function httpHost(url: string): string {
   try {
@@ -120,18 +129,104 @@ function browserProxyURL(url: string): string {
   return `${BROWSER_PROXY_PATH}?url=${encodeURIComponent(url)}`;
 }
 
-function ServerBrowserPage({ url, onFrameNavigate }: { url: string; onFrameNavigate: (url: string) => void }) {
+function isHTTPURL(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function originalURLFromProxy(href: string): string {
+  try {
+    const parsed = new URL(href, window.location.origin);
+    if (parsed.origin === window.location.origin && parsed.pathname === BROWSER_PROXY_PATH) {
+      return parsed.searchParams.get('url') || href;
+    }
+  } catch {
+    // Fall through to the original href.
+  }
+  return href;
+}
+
+function fileNameFromURL(rawURL: string): string {
+  try {
+    const parsed = new URL(rawURL);
+    const last = parsed.pathname.split('/').filter(Boolean).pop() || '';
+    return last ? decodeURIComponent(last) : '';
+  } catch {
+    return '';
+  }
+}
+
+function looksLikeDownloadURL(rawURL: string): boolean {
+  try {
+    const parsed = new URL(rawURL);
+    const path = parsed.pathname.toLowerCase();
+    return DOWNLOAD_EXTENSIONS.some(ext => path.endsWith(ext));
+  } catch {
+    return false;
+  }
+}
+
+function suggestedFileNameFromAnchor(anchor: HTMLAnchorElement, originalURL: string): string {
+  const attr = anchor.getAttribute('download')?.trim();
+  return attr || fileNameFromURL(originalURL);
+}
+
+function shouldDownloadAnchor(anchor: HTMLAnchorElement, originalURL: string): boolean {
+  if (!isHTTPURL(originalURL)) return false;
+  if (anchor.hasAttribute('download')) return true;
+  return looksLikeDownloadURL(originalURL);
+}
+
+function ServerBrowserPage({
+  url,
+  onFrameNavigate,
+  onDownloadCandidate,
+}: {
+  url: string;
+  onFrameNavigate: (url: string) => void;
+  onDownloadCandidate: (url: string, fileName?: string) => void;
+}) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const cleanupClickHandlerRef = useRef<(() => void) | null>(null);
   const [loaded, setLoaded] = useState(false);
   const src = browserProxyURL(url);
 
   useEffect(() => {
     setLoaded(false);
+    cleanupClickHandlerRef.current?.();
+    cleanupClickHandlerRef.current = null;
   }, [src]);
+
+  useEffect(() => {
+    return () => {
+      cleanupClickHandlerRef.current?.();
+    };
+  }, []);
 
   const handleLoad = () => {
     setLoaded(true);
+    cleanupClickHandlerRef.current?.();
+    cleanupClickHandlerRef.current = null;
     try {
+      const doc = frameRef.current?.contentDocument;
+      if (doc) {
+        const handleClick = (event: MouseEvent) => {
+          const target = event.target as { closest?: (selector: string) => Element | null } | null;
+          const anchor = target?.closest?.('a[href]') as HTMLAnchorElement | null;
+          if (!anchor) return;
+          const originalURL = originalURLFromProxy(anchor.href);
+          if (!shouldDownloadAnchor(anchor, originalURL)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onDownloadCandidate(originalURL, suggestedFileNameFromAnchor(anchor, originalURL));
+        };
+        doc.addEventListener('click', handleClick, true);
+        cleanupClickHandlerRef.current = () => doc.removeEventListener('click', handleClick, true);
+      }
       const frameHref = frameRef.current?.contentWindow?.location.href;
       if (!frameHref) return;
       const current = new URL(frameHref, window.location.origin);
@@ -515,15 +610,30 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
   const [showHistory, setShowHistory] = useState(false);
   const [addressValue, setAddressValue] = useState(HOME_URL);
   const [isLoading, setIsLoading] = useState(false);
+  const [downloadMessage, setDownloadMessage] = useState('');
+  const [downloadError, setDownloadError] = useState('');
   const addressRef = useRef<HTMLInputElement>(null);
+  const openWindow = useWindowStore(state => state.openWindow);
+  const focusWindow = useWindowStore(state => state.focusWindow);
+  const getWindowsByAppId = useWindowStore(state => state.getWindowsByAppId);
 
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+  const activeURLCanDownload = isHTTPURL(activeTab?.url || '');
 
   useEffect(() => {
     if (activeTab) {
       setAddressValue(activeTab.url);
     }
   }, [activeTab?.url]);
+
+  useEffect(() => {
+    if (!downloadMessage && !downloadError) return;
+    const timer = window.setTimeout(() => {
+      setDownloadMessage('');
+      setDownloadError('');
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [downloadMessage, downloadError]);
 
   const loadBookmarks = useCallback(async () => {
     try {
@@ -578,6 +688,32 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
       return [{ url, title: titleForURL(url), timestamp: new Date() }, ...prev].slice(0, 100);
     });
   }, [activeTabId]);
+
+  const openDownloadManager = useCallback(() => {
+    const existing = getWindowsByAppId('downloadmanager').find(win => !win.isMinimized);
+    if (existing) {
+      focusWindow(existing.id);
+      return;
+    }
+    openWindow('downloadmanager', '下载管理器', { width: 920, height: 640 });
+  }, [focusWindow, getWindowsByAppId, openWindow]);
+
+  const startBrowserDownload = useCallback(async (url: string, fileName = '') => {
+    if (!isHTTPURL(url)) {
+      setDownloadMessage('');
+      setDownloadError('只能下载 HTTP/HTTPS 地址');
+      return;
+    }
+    try {
+      const job = await downloadsClient.create(url, fileName);
+      setDownloadError('');
+      setDownloadMessage(`已加入下载队列: ${job.file_name}`);
+      openDownloadManager();
+    } catch (err) {
+      setDownloadMessage('');
+      setDownloadError(err instanceof Error ? err.message : String(err));
+    }
+  }, [openDownloadManager]);
 
   const canGoBack = activeTab?.historyIndex > 0;
   const canGoForward = activeTab ? activeTab.historyIndex < activeTab.history.length - 1 : false;
@@ -702,6 +838,16 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
             <Star size={14} style={{ color: isBookmarked ? '#b8860b' : 'var(--ink-400)', fill: isBookmarked ? '#b8860b' : 'none' }} />
           </button>
         </div>
+        <button
+          onClick={() => {
+            if (activeTab) void startBrowserDownload(activeTab.url);
+          }}
+          disabled={!activeURLCanDownload}
+          className="p-1.5 rounded transition-all duration-150 hover:bg-black/5 disabled:opacity-30"
+          title="下载当前地址 (Download current URL)"
+        >
+          <DownloadIcon size={16} style={{ color: 'var(--ink-700)' }} />
+        </button>
         <button onClick={() => setShowHistory(!showHistory)} className="p-1.5 rounded transition-all duration-150 hover:bg-black/5">
           <Clock size={16} style={{ color: showHistory ? 'var(--cinnabar)' : 'var(--ink-700)' }} />
         </button>
@@ -739,6 +885,30 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
         </button>
       </div>
 
+      {(downloadMessage || downloadError) && (
+        <div
+          className="flex items-center gap-2 px-3 py-1 text-caption"
+          style={{
+            backgroundColor: downloadError ? 'rgba(192, 57, 43, 0.08)' : 'rgba(39, 174, 96, 0.08)',
+            borderBottom: '1px solid var(--ink-200)',
+            color: downloadError ? 'var(--cinnabar)' : 'var(--ink-700)',
+          }}
+        >
+          <DownloadIcon size={12} />
+          <span className="truncate flex-1">{downloadError || downloadMessage}</span>
+          <button
+            onClick={() => {
+              setDownloadMessage('');
+              setDownloadError('');
+            }}
+            className="p-0.5 rounded hover:bg-black/5"
+            title="关闭提示"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       {/* Main content */}
       <div className="flex flex-1 overflow-hidden relative">
         <div className="flex-1 overflow-hidden">
@@ -751,7 +921,13 @@ export default function Browser({ windowId: _windowId }: BrowserProps) {
           ) : shouldUseSimulatedPage(activeTab?.url || HOME_URL) ? (
             <SimulatedPage url={activeTab?.url || HOME_URL} onNavigate={(url) => navigateTo(url)} />
           ) : (
-            <ServerBrowserPage url={activeTab?.url || HOME_URL} onFrameNavigate={syncFrameNavigation} />
+            <ServerBrowserPage
+              url={activeTab?.url || HOME_URL}
+              onFrameNavigate={syncFrameNavigation}
+              onDownloadCandidate={(url, fileName) => {
+                void startBrowserDownload(url, fileName);
+              }}
+            />
           )}
         </div>
 
