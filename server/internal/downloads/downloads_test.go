@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,67 @@ func TestManagerCompletesDownload(t *testing.T) {
 	}
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("output content mismatch: %q", got)
+	}
+}
+
+func TestManagerUsesContentDispositionFileName(t *testing.T) {
+	payload := []byte("content-disposition payload")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Disposition", `attachment; filename="report final.pdf"`)
+		_, _ = w.Write(payload)
+	}))
+	defer upstream.Close()
+
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := m.Create(upstream.URL+"/download", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitJob(t, m, job.ID, func(j Job) bool { return j.Status == StatusCompleted })
+
+	if job.FileName != "report final.pdf" {
+		t.Fatalf("file name = %q, want %q", job.FileName, "report final.pdf")
+	}
+	if filepath.Base(job.OutputPath) != "report final.pdf" {
+		t.Fatalf("output path = %q, want basename report final.pdf", job.OutputPath)
+	}
+	got, err := os.ReadFile(job.OutputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("output content mismatch: %q", got)
+	}
+}
+
+func TestManagerKeepsRequestedFileNameOverContentDisposition(t *testing.T) {
+	payload := []byte("explicit filename payload")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Disposition", `attachment; filename="server-name.pdf"`)
+		_, _ = w.Write(payload)
+	}))
+	defer upstream.Close()
+
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := m.Create(upstream.URL+"/download", "client-name.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitJob(t, m, job.ID, func(j Job) bool { return j.Status == StatusCompleted })
+
+	if job.FileName != "client-name.pdf" {
+		t.Fatalf("file name = %q, want %q", job.FileName, "client-name.pdf")
+	}
+	if filepath.Base(job.OutputPath) != "client-name.pdf" {
+		t.Fatalf("output path = %q, want basename client-name.pdf", job.OutputPath)
 	}
 }
 

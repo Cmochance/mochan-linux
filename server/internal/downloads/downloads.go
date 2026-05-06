@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -49,6 +50,8 @@ type Job struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
+
+	PreferResponseFileName bool `json:"-"`
 }
 
 type Manager struct {
@@ -135,7 +138,9 @@ func (m *Manager) Create(rawURL, requestedName string) (Job, error) {
 		return Job{}, err
 	}
 	now := time.Now().UTC()
-	fileName := sanitizeFileName(requestedName)
+	requestedFileName := sanitizeFileName(requestedName)
+	preferResponseFileName := requestedFileName == ""
+	fileName := requestedFileName
 	if fileName == "" {
 		fileName = sanitizeFileName(fileNameFromURL(target))
 	}
@@ -157,14 +162,15 @@ func (m *Manager) Create(rawURL, requestedName string) (Job, error) {
 	}
 	outputPath := m.uniqueOutputPathLocked(fileName)
 	job := &Job{
-		ID:         id,
-		URL:        target.String(),
-		FileName:   filepath.Base(outputPath),
-		OutputPath: outputPath,
-		Status:     StatusQueued,
-		SizeBytes:  -1,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:                     id,
+		URL:                    target.String(),
+		FileName:               filepath.Base(outputPath),
+		OutputPath:             outputPath,
+		Status:                 StatusQueued,
+		SizeBytes:              -1,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreferResponseFileName: preferResponseFileName,
 	}
 	m.jobs[id] = job
 	if err := m.persistLocked(); err != nil {
@@ -298,6 +304,11 @@ func (m *Manager) run(ctx context.Context, id string) {
 			job.SizeBytes = resp.ContentLength
 		})
 	}
+	m.applyResponseFileName(id, resp)
+	job, err = m.Get(id)
+	if err != nil {
+		return
+	}
 
 	tmpPath := job.OutputPath + ".part"
 	out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
@@ -410,6 +421,26 @@ func (m *Manager) update(id string, persist bool, fn func(*Job)) {
 	}
 }
 
+func (m *Manager) applyResponseFileName(id string, resp *http.Response) {
+	responseName := fileNameFromContentDisposition(resp.Header.Get("Content-Disposition"))
+	if responseName == "" {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	job, ok := m.jobs[id]
+	if !ok || !job.PreferResponseFileName || terminal(job.Status) {
+		return
+	}
+	outputPath := m.uniqueOutputPathForJobLocked(responseName, id)
+	job.FileName = filepath.Base(outputPath)
+	job.OutputPath = outputPath
+	job.UpdatedAt = time.Now().UTC()
+	_ = m.persistLocked()
+}
+
 func (m *Manager) load() error {
 	buf, err := os.ReadFile(m.indexPath)
 	if err != nil {
@@ -472,12 +503,16 @@ func (m *Manager) persistLocked() error {
 }
 
 func (m *Manager) uniqueOutputPathLocked(fileName string) string {
+	return m.uniqueOutputPathForJobLocked(fileName, "")
+}
+
+func (m *Manager) uniqueOutputPathForJobLocked(fileName, ignoreID string) string {
 	base := sanitizeFileName(fileName)
 	if base == "" {
 		base = "download"
 	}
 	candidate := filepath.Join(m.filesDir, base)
-	if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) && !m.outputPathInUseLocked(candidate) {
+	if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) && !m.outputPathInUseLocked(candidate, ignoreID) {
 		return candidate
 	}
 	ext := filepath.Ext(base)
@@ -485,14 +520,17 @@ func (m *Manager) uniqueOutputPathLocked(fileName string) string {
 	for i := 1; ; i++ {
 		name := fmt.Sprintf("%s-%d%s", stem, i, ext)
 		candidate = filepath.Join(m.filesDir, name)
-		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) && !m.outputPathInUseLocked(candidate) {
+		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) && !m.outputPathInUseLocked(candidate, ignoreID) {
 			return candidate
 		}
 	}
 }
 
-func (m *Manager) outputPathInUseLocked(path string) bool {
-	for _, job := range m.jobs {
+func (m *Manager) outputPathInUseLocked(path, ignoreID string) bool {
+	for id, job := range m.jobs {
+		if id == ignoreID {
+			continue
+		}
 		if job.OutputPath == path {
 			return true
 		}
@@ -617,6 +655,17 @@ func fileNameFromURL(u *url.URL) string {
 		name = decoded
 	}
 	return name
+}
+
+func fileNameFromContentDisposition(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	_, params, err := mime.ParseMediaType(value)
+	if err != nil {
+		return ""
+	}
+	return sanitizeFileName(params["filename"])
 }
 
 func pathBase(path string) string {
