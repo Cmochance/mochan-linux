@@ -508,7 +508,7 @@ func (m *Manager) uniqueOutputPathLocked(fileName string) string {
 
 func (m *Manager) uniqueOutputPathForJobLocked(fileName, ignoreID string) string {
 	base := sanitizeFileName(fileName)
-	if base == "" {
+	if base == "" || !safeBaseName(base) {
 		base = "download"
 	}
 	candidate := filepath.Join(m.filesDir, base)
@@ -680,9 +680,21 @@ func pathBase(path string) string {
 	return path
 }
 
+// safeBaseName reports whether name is a single path component safe to join
+// onto filesDir. It is a defense-in-depth check on top of sanitizeFileName.
+func safeBaseName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, "/\\\x00") {
+		return false
+	}
+	return name == filepath.Base(name)
+}
+
 func sanitizeFileName(name string) string {
 	name = strings.TrimSpace(filepath.Base(name))
-	if name == "." || name == string(filepath.Separator) {
+	if name == "." || name == ".." || name == string(filepath.Separator) {
 		return ""
 	}
 	name = strings.Map(func(r rune) rune {
@@ -693,6 +705,9 @@ func sanitizeFileName(name string) string {
 			return r
 		}
 	}, name)
+	if name == "." || name == ".." {
+		return ""
+	}
 	if len(name) > 180 {
 		ext := filepath.Ext(name)
 		stem := strings.TrimSuffix(name, ext)

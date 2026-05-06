@@ -16,7 +16,17 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/alysechen/mochan-linux/server/internal/audit"
+	"github.com/alysechen/mochan-linux/server/internal/netguard"
 )
+
+func TestMain(m *testing.M) {
+	// Tests dial httptest servers bound to 127.0.0.1, which the hardened
+	// netguard now blocks by default.
+	restore := netguard.SetAllowPrivate(true)
+	code := m.Run()
+	restore()
+	os.Exit(code)
+}
 
 func TestManagerCompletesDownload(t *testing.T) {
 	payload := []byte("server-side download payload")
@@ -273,6 +283,46 @@ func TestHandlerRoutesAndAudit(t *testing.T) {
 	auditText := string(auditBytes)
 	if !strings.Contains(auditText, `"type":"download.create"`) || !strings.Contains(auditText, `"type":"download.delete"`) {
 		t.Fatalf("audit log missing download events: %s", auditText)
+	}
+}
+
+func TestSanitizeFileNameRejectsTraversal(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"..", ""},
+		{".", ""},
+		{"/", ""},
+		{"../etc/passwd", "passwd"},
+		{"foo/../bar", "bar"},
+		{"/abs/path.txt", "path.txt"},
+		{"normal.txt", "normal.txt"},
+		{"with space.bin", "with space.bin"},
+		{"a/b\\c", "bc"},
+		{"trailing/..", ""},
+	}
+	for _, tc := range cases {
+		got := sanitizeFileName(tc.in)
+		if got != tc.want {
+			t.Errorf("sanitizeFileName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestUniqueOutputPathStaysInsideFilesDir(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"..", "/", ".", "../etc/passwd", "/abs/x"} {
+		m.mu.Lock()
+		out := m.uniqueOutputPathLocked(raw)
+		m.mu.Unlock()
+		dir := filepath.Dir(out)
+		if dir != m.filesDir {
+			t.Errorf("uniqueOutputPathLocked(%q) wrote to %q, want parent %q", raw, dir, m.filesDir)
+		}
 	}
 }
 

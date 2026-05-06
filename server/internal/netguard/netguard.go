@@ -11,9 +11,24 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
+
+// allowPrivate, when true, lets the guarded client reach RFC1918, loopback,
+// and IPv6 unique-local destinations. Disabled by default; enable by setting
+// MOCHAN_PROXY_ALLOW_PRIVATE=1 for development against local services.
+var allowPrivate = os.Getenv("MOCHAN_PROXY_ALLOW_PRIVATE") == "1"
+
+// SetAllowPrivate toggles private-range access at runtime and returns a
+// restore function. Intended for tests that need to dial httptest servers on
+// loopback; do not use in production code.
+func SetAllowPrivate(v bool) func() {
+	prev := allowPrivate
+	allowPrivate = v
+	return func() { allowPrivate = prev }
+}
 
 // NewHTTPClient returns an HTTP client with guarded dialing and redirect
 // validation. A zero timeout leaves the client without an overall deadline.
@@ -140,7 +155,9 @@ func ResolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
 	return addrs, nil
 }
 
-// BlockedAddr blocks link-local ranges and common cloud metadata endpoints.
+// BlockedAddr blocks link-local ranges, RFC1918 / loopback / unique-local
+// space, and common cloud metadata endpoints. Set MOCHAN_PROXY_ALLOW_PRIVATE=1
+// to opt out of the private-range block (cloud metadata stays blocked).
 func BlockedAddr(addr netip.Addr) bool {
 	addr = addr.Unmap()
 	if !addr.IsValid() {
@@ -157,6 +174,16 @@ func BlockedAddr(addr netip.Addr) bool {
 	}
 	for _, raw := range blocked {
 		if parsed, err := netip.ParseAddr(raw); err == nil && addr == parsed {
+			return true
+		}
+	}
+
+	if !allowPrivate {
+		if addr.IsLoopback() || addr.IsPrivate() {
+			return true
+		}
+		// IPv6 unique-local (fc00::/7) is not covered by IsPrivate.
+		if addr.Is6() && len(addr.AsSlice()) > 0 && addr.AsSlice()[0]&0xfe == 0xfc {
 			return true
 		}
 	}

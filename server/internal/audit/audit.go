@@ -111,26 +111,29 @@ func (l *Logger) Log(ctx context.Context, e Event) {
 	_ = l.f.Sync()
 }
 
+// rotateLocked moves the active file to <path>.1 and opens a fresh active
+// file. The current fd is kept alive (writing to the renamed file) until the
+// new fd is open, so a failure to open the new file leaves the logger
+// pointing at a still-writable handle instead of a nil fd.
 func (l *Logger) rotateLocked() error {
-	if err := l.f.Close(); err != nil {
-		return err
-	}
 	old := l.path + ".1"
 	_ = os.Remove(old)
 	if err := os.Rename(l.path, old); err != nil {
-		// re-open the original; rotation failed but we still need a writer
-		f, openErr := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
-		if openErr != nil {
-			return openErr
-		}
-		l.f = f
 		return err
 	}
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	newF, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
+		// Roll the rename back so the active path keeps existing; the still-
+		// open fd l.f points at it (rename does not invalidate fds on POSIX).
+		_ = os.Rename(old, l.path)
 		return err
 	}
-	l.f = f
+	oldF := l.f
+	l.f = newF
+	if oldF != nil {
+		_ = oldF.Sync()
+		_ = oldF.Close()
+	}
 	return nil
 }
 

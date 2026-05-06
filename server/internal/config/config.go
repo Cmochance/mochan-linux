@@ -47,8 +47,27 @@ func Load() (*Config, error) {
 	if minLen, _ := strconv.Atoi(envOr("MOCHAN_MIN_SECRET_LEN", "32")); len(c.JWTSecret) < minLen {
 		return nil, fmt.Errorf("MOCHAN_JWT_SECRET must be at least %d bytes", minLen)
 	}
+	if err := checkSecretEntropy(c.JWTSecret); err != nil {
+		return nil, fmt.Errorf("MOCHAN_JWT_SECRET %w", err)
+	}
 
 	return c, nil
+}
+
+// checkSecretEntropy rejects obviously weak secrets that happen to satisfy
+// the length requirement (e.g. "a" repeated 32 times). It is a backstop, not
+// a substitute for a strong random source — generate secrets via
+// `openssl rand -base64 48` or equivalent.
+func checkSecretEntropy(secret []byte) error {
+	const minDistinct = 12
+	distinct := make(map[byte]struct{}, len(secret))
+	for _, b := range secret {
+		distinct[b] = struct{}{}
+	}
+	if len(distinct) < minDistinct {
+		return fmt.Errorf("has %d distinct bytes, need at least %d (looks like a repeated/low-entropy value)", len(distinct), minDistinct)
+	}
+	return nil
 }
 
 func envOr(key, fallback string) string {
