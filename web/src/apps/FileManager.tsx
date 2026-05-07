@@ -33,7 +33,7 @@ import {
 import { ApiError } from '@/lib/api';
 import { trashClient } from '@/lib/trash';
 import { CodeEditor } from '@/components/CodeEditor';
-import { openFileInApp } from '@/lib/openFile';
+import { openFileInApp, readFileManagerPayload } from '@/lib/openFile';
 
 const SHORTCUTS: { label: string; path: string }[] = [
   { label: '主目录', path: '~' },
@@ -51,7 +51,7 @@ interface EditorState {
   error: string | null;
 }
 
-export default function FileManager() {
+export default function FileManager({ windowId }: { windowId?: string }) {
   const [home, setHome] = useState<string>('/');
   const [listing, setListing] = useState<FsListResponse | null>(null);
   const [pathInput, setPathInput] = useState('');
@@ -65,15 +65,18 @@ export default function FileManager() {
   const [mkdirValue, setMkdirValue] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // initial load: fetch home, then list it
+  // initial load: fetch home, then either open the payload-supplied path
+  // (e.g. from DownloadManager's "open in file manager") or fall back to
+  // the user's home directory.
   useEffect(() => {
     let alive = true;
+    const payload = readFileManagerPayload(windowId);
     void (async () => {
       try {
         const h = await fsClient.home();
         if (!alive) return;
         setHome(h);
-        await load(h);
+        await load(payload.initialPath || h, payload.selectName);
       } catch (e) {
         if (alive) setError(toMsg(e));
       }
@@ -82,9 +85,9 @@ export default function FileManager() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [windowId]);
 
-  async function load(path: string) {
+  async function load(path: string, selectName?: string) {
     setLoading(true);
     setError(null);
     try {
@@ -92,7 +95,7 @@ export default function FileManager() {
       const r = await fsClient.list(resolved);
       setListing(r);
       setPathInput(r.path);
-      setSelected(null);
+      setSelected(selectName ? r.entries.find((e) => e.name === selectName) ?? null : null);
     } catch (e) {
       setError(toMsg(e));
     } finally {

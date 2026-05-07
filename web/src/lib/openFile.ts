@@ -104,3 +104,45 @@ export function usePayloadPath(windowId: string | undefined): string | undefined
   const p = win?.payload?.path;
   return typeof p === 'string' ? p : undefined;
 }
+
+export interface FileManagerPayload {
+  initialPath?: string;
+  selectName?: string;
+}
+
+/**
+ * Read FileManager-specific payload (initialPath, selectName) from the
+ * window store. Used when another app launched FileManager and pre-selected
+ * a directory + entry, e.g. "open in file manager" from DownloadManager.
+ */
+export function readFileManagerPayload(windowId: string | undefined): FileManagerPayload {
+  if (!windowId) return {};
+  const win = useWindowStore.getState().getWindowById(windowId);
+  const p = win?.payload as FileManagerPayload | undefined;
+  return {
+    initialPath: typeof p?.initialPath === 'string' ? p.initialPath : undefined,
+    selectName: typeof p?.selectName === 'string' && p.selectName ? p.selectName : undefined,
+  };
+}
+
+/**
+ * Open the FileManager focused on a specific filesystem location. Pass an
+ * absolute file path; the parent dir is opened and the file is selected.
+ * Pass an absolute dir (with trailing `/` or pointing at a directory) to
+ * just open it without a selection.
+ */
+export function openInFileManager(targetPath: string): void {
+  const isDir = targetPath.endsWith('/');
+  const lastSlash = targetPath.lastIndexOf('/');
+  const dir = isDir ? targetPath : targetPath.slice(0, lastSlash) || '/';
+  const selectName = isDir ? '' : basename(targetPath);
+  useWindowStore.getState().openWindow(
+    'filemanager',
+    `文件管理 - ${basename(dir)}`,
+    {
+      width: 960,
+      height: 640,
+      payload: { initialPath: dir, selectName, source: 'open-in-fm' },
+    },
+  );
+}

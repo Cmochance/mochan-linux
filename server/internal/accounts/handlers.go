@@ -282,29 +282,76 @@ func (h *Handler) listInvites(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "list failed", http.StatusInternalServerError)
 		return
 	}
+	users, err := h.DB.ListUsers(r.Context())
+	if err != nil {
+		http.Error(w, "list failed", http.StatusInternalServerError)
+		return
+	}
+	nameByID := make(map[int64]string, len(users))
+	for _, u := range users {
+		nameByID[u.ID] = u.Username
+	}
+	now := time.Now()
 	type item struct {
-		ID        int64     `json:"id"`
-		Code      string    `json:"code"`
-		Email     string    `json:"email,omitempty"`
-		CreatedAt time.Time `json:"created_at"`
-		ExpiresAt time.Time `json:"expires_at"`
-		Used      bool      `json:"used"`
+		ID                int64     `json:"id"`
+		Code              string    `json:"code"`
+		Email             string    `json:"email,omitempty"`
+		CreatedAt         time.Time `json:"created_at"`
+		ExpiresAt         time.Time `json:"expires_at"`
+		Used              bool      `json:"used"`
+		Expired           bool      `json:"expired"`
+		CreatedByUsername string    `json:"created_by_username,omitempty"`
+		UsedByUsername    string    `json:"used_by_username,omitempty"`
 	}
 	out := make([]item, 0, len(invs))
 	for _, inv := range invs {
-		out = append(out, item{ID: inv.ID, Code: inv.Code, Email: inv.Email, CreatedAt: inv.CreatedAt, ExpiresAt: inv.ExpiresAt, Used: inv.Used()})
+		it := item{
+			ID:                inv.ID,
+			Code:              inv.Code,
+			Email:             inv.Email,
+			CreatedAt:         inv.CreatedAt,
+			ExpiresAt:         inv.ExpiresAt,
+			Used:              inv.Used(),
+			Expired:           !inv.Used() && now.After(inv.ExpiresAt),
+			CreatedByUsername: nameByID[inv.CreatedBy],
+		}
+		if inv.UsedBy.Valid {
+			it.UsedByUsername = nameByID[inv.UsedBy.Int64]
+		}
+		out = append(out, it)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"invites": out})
 }
 
 type createInviteReq struct {
-	Email string `json:"email,omitempty"`
+	Email    string `json:"email,omitempty"`
+	TTLHours int    `json:"ttl_hours,omitempty"`
 }
+
+// maxInviteTTL caps admin-issued invites at 30 days so a forgotten code
+// can't dangle forever. Bump this if you have a real need.
+const maxInviteTTL = 30 * 24 * time.Hour
 
 func (h *Handler) createInvite(w http.ResponseWriter, r *http.Request) {
 	var body createInviteReq
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if body.Email != "" && !looksLikeEmail(strings.ToLower(strings.TrimSpace(body.Email))) {
+		http.Error(w, "invalid email", http.StatusBadRequest)
+		return
+	}
+	ttl := h.InviteTTL
+	if body.TTLHours > 0 {
+		ttl = time.Duration(body.TTLHours) * time.Hour
+	}
+	if ttl <= 0 {
+		http.Error(w, "ttl_hours must be positive", http.StatusBadRequest)
+		return
+	}
+	if ttl > maxInviteTTL {
+		http.Error(w, "ttl_hours capped at 720 (30 days)", http.StatusBadRequest)
 		return
 	}
 	c, _ := auth.ClaimsFrom(r.Context())
@@ -313,7 +360,7 @@ func (h *Handler) createInvite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rng failed", http.StatusInternalServerError)
 		return
 	}
-	inv, err := h.DB.CreateInvite(r.Context(), code, body.Email, c.UID, h.InviteTTL)
+	inv, err := h.DB.CreateInvite(r.Context(), code, body.Email, c.UID, ttl)
 	if err != nil {
 		http.Error(w, "create failed", http.StatusInternalServerError)
 		return
@@ -323,6 +370,7 @@ func (h *Handler) createInvite(w http.ResponseWriter, r *http.Request) {
 		"id":         inv.ID,
 		"code":       inv.Code,
 		"email":      inv.Email,
+		"created_at": inv.CreatedAt,
 		"expires_at": inv.ExpiresAt,
 	})
 }
