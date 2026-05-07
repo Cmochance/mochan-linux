@@ -4,7 +4,7 @@ import {
   File, FileText, Image, Music, Video, Archive, Code, Search, FolderOpen,
   Package
 } from 'lucide-react';
-import { downloadsClient, type DownloadJob, type DownloadStatus } from '../lib/downloads';
+import { downloadsClient, type DownloadJob, type DownloadStatus, type InstallVerdict } from '../lib/downloads';
 import { fsClient, formatSize } from '../lib/fs';
 import { openInFileManager } from '../lib/openFile';
 import { ApiError } from '../lib/api';
@@ -101,6 +101,8 @@ interface InstallState {
   lines: string[];
   done: boolean;
   exitCode: number | null;
+  verdict: InstallVerdict;
+  verdictDetail: string;
   error: string | null;
 }
 
@@ -197,22 +199,31 @@ export default function DownloadManager({ windowId: _windowId }: DownloadManager
     if (install && !install.done) return; // another install in progress in this window
     const ctrl = new AbortController();
     installAbortRef.current = ctrl;
-    setInstall({ jobId: job.id, fileName: job.file_name, lines: [], done: false, exitCode: null, error: null });
+    setInstall({
+      jobId: job.id, fileName: job.file_name, lines: [], done: false,
+      exitCode: null, verdict: 'unknown', verdictDetail: '', error: null,
+    });
     try {
-      const code = await downloadsClient.installDeb(
+      const result = await downloadsClient.installDeb(
         job.id,
         (line) => {
           setInstall((s) => (s && s.jobId === job.id ? { ...s, lines: [...s.lines, line] } : s));
         },
         ctrl.signal,
+        (verdict, detail) => {
+          setInstall((s) => (s && s.jobId === job.id ? { ...s, verdict, verdictDetail: detail } : s));
+        },
       );
-      setInstall((s) => (s && s.jobId === job.id ? { ...s, done: true, exitCode: code } : s));
+      setInstall((s) => (s && s.jobId === job.id ? {
+        ...s, done: true, exitCode: result.exitCode,
+        verdict: result.verdict, verdictDetail: result.detail,
+      } : s));
     } catch (err) {
       if (ctrl.signal.aborted) {
-        setInstall((s) => (s && s.jobId === job.id ? { ...s, done: true, exitCode: -1, error: '已取消' } : s));
+        setInstall((s) => (s && s.jobId === job.id ? { ...s, done: true, exitCode: -1, verdict: 'failed', error: '已取消' } : s));
       } else {
         const msg = err instanceof ApiError ? (err.body || `HTTP ${err.status}`) : errorMessage(err);
-        setInstall((s) => (s && s.jobId === job.id ? { ...s, done: true, exitCode: -1, error: msg } : s));
+        setInstall((s) => (s && s.jobId === job.id ? { ...s, done: true, exitCode: -1, verdict: 'failed', error: msg } : s));
       }
     } finally {
       installAbortRef.current = null;
@@ -542,14 +553,24 @@ export default function DownloadManager({ windowId: _windowId }: DownloadManager
                 {!install.done && (
                   <span className="text-caption" style={{ color: 'var(--cinnabar)' }}>运行中…</span>
                 )}
-                {install.done && install.exitCode === 0 && (
+                {install.done && install.verdict === 'success' && install.exitCode === 0 && (
                   <span className="text-caption inline-flex items-center gap-1" style={{ color: 'var(--success)' }}>
-                    <CheckCircle size={12} /> 安装完成
+                    <CheckCircle size={12} /> 安装成功
                   </span>
                 )}
-                {install.done && install.exitCode !== 0 && (
+                {install.done && install.verdict === 'partial' && (
+                  <span className="text-caption inline-flex items-center gap-1" style={{ color: '#c97a2e' }}>
+                    <AlertCircle size={12} /> 半装/已清理 ({install.verdictDetail || `exit ${install.exitCode}`})
+                  </span>
+                )}
+                {install.done && install.verdict === 'failed' && (
                   <span className="text-caption inline-flex items-center gap-1" style={{ color: 'var(--cinnabar-light)' }}>
-                    <AlertCircle size={12} /> 失败 (exit {install.exitCode}{install.error ? ` · ${install.error}` : ''})
+                    <AlertCircle size={12} /> 失败 (exit {install.exitCode}{install.error ? ` · ${install.error}` : install.verdictDetail ? ` · ${install.verdictDetail}` : ''})
+                  </span>
+                )}
+                {install.done && install.verdict === 'unknown' && (
+                  <span className="text-caption inline-flex items-center gap-1" style={{ color: 'var(--ink-500)' }}>
+                    <AlertCircle size={12} /> 状态未知 (exit {install.exitCode})
                   </span>
                 )}
                 <button
@@ -578,7 +599,7 @@ export default function DownloadManager({ windowId: _windowId }: DownloadManager
               style={{ borderTop: '1px solid var(--ink-200)', backgroundColor: 'var(--ink-100)' }}
             >
               <span className="text-caption" style={{ color: 'var(--ink-500)' }}>
-                {install.lines.length} 行 · {install.done ? `完成 (exit ${install.exitCode})` : '安装进行中'}
+                {install.lines.length} 行 · {install.done ? `${install.verdict} (exit ${install.exitCode})` : '安装进行中'}
               </span>
               <button
                 onClick={closeInstall}
