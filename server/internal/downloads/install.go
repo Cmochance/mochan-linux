@@ -3,6 +3,7 @@ package downloads
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -72,9 +73,8 @@ func (h *Handler) installDeb(w http.ResponseWriter, r *http.Request) {
 
 	// Stream output as text/event-stream. The frontend reads via fetch()
 	// and parses each `data:` line; an `event: exit` frame carries the
-	// final exit code. Why SSE over plain chunked text: easier to scan
-	// for the terminating event without inventing a sentinel that could
-	// collide with apt's own output.
+	// final exit code, and an `event: status` frame carries the post-
+	// install dpkg verdict so the UI can warn even when apt returns 0.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -101,15 +101,28 @@ func (h *Handler) installDeb(w http.ResponseWriter, r *http.Request) {
 	if c, ok := auth.ClaimsFrom(r.Context()); ok {
 		actor = c.Subject
 	}
+
+	// Read the .deb's package name up-front so we can verify status by
+	// name afterwards. dpkg-deb is a local read-only operation; doesn't
+	// need sudo and doesn't touch /var/lib/dpkg.
+	pkgName, pkgErr := readDebPackageName(abs)
+	if pkgErr != nil {
+		send("", "==> 无法解析 .deb 包名: "+pkgErr.Error())
+	}
+
 	h.auditEvent(r, "sys.deb.install.start", map[string]any{
-		"id":     job.ID,
-		"path":   abs,
-		"actor":  actor,
-		"name":   job.FileName,
+		"id":      job.ID,
+		"path":    abs,
+		"actor":   actor,
+		"name":    job.FileName,
+		"package": pkgName,
 	})
 
 	send("", fmt.Sprintf("==> 安装 %s", filepath.Base(abs)))
-	send("", "==> 命令: sudo -n apt-get install -y --no-install-recommends "+abs)
+	if pkgName != "" {
+		send("", fmt.Sprintf("==> dpkg 包名: %s", pkgName))
+	}
+	send("", "==> 命令: sudo -n apt-get install -y -- "+abs)
 	send("", "")
 
 	// 10-minute hard cap. apt downloading transitive deps over a slow
@@ -117,9 +130,13 @@ func (h *Handler) installDeb(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
 
+	// Note: we deliberately keep `Recommends` here. GUI .deb packages
+	// commonly list dbus / shared-mime-info / icon themes / WebKit
+	// runtime bits as Recommends rather than hard Depends. Skipping
+	// them caused the original codex-app-transfer install to leave
+	// libwebkit2gtk-4.1-0 in iHR state on dochenmo.
 	cmd := exec.CommandContext(ctx, "sudo", "-n",
-		"apt-get", "install", "-y", "--no-install-recommends", "--", abs)
-	// Force non-interactive: apt will not prompt for config diffs etc.
+		"apt-get", "install", "-y", "--", abs)
 	cmd.Env = append(cmd.Env,
 		"DEBIAN_FRONTEND=noninteractive",
 		"LC_ALL=C.UTF-8",
@@ -170,10 +187,60 @@ func (h *Handler) installDeb(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Post-install verdict. apt returning 0 is necessary but not
+	// sufficient: dpkg can leave a package in iHR (half-installed +
+	// reinst-required) when a maintainer script fails mid-unpack, and
+	// apt will still report success. dpkg-query is the source of truth.
+	verdict := "success" // success | partial | failed | unknown
+	verdictDetail := ""
+	if pkgName != "" {
+		send("", "")
+		send("", fmt.Sprintf("==> 校验 %s 状态: dpkg-query -W -f='${Status}'", pkgName))
+		state, qerr := queryDpkgStatus(ctx, pkgName)
+		switch {
+		case qerr != nil:
+			verdict = "unknown"
+			verdictDetail = "dpkg-query failed: " + qerr.Error()
+			send("", verdictDetail)
+		case state == "":
+			verdict = "failed"
+			verdictDetail = "dpkg 中没有这个包记录,安装未生效"
+			send("", verdictDetail)
+		case state == "install ok installed":
+			verdict = "success"
+			send("", "状态: install ok installed ✓")
+		default:
+			verdict = "partial"
+			verdictDetail = "状态: " + state
+			send("", verdictDetail)
+			send("", "==> 检测到残留,自动清理: dpkg --remove --force-remove-reinstreq "+pkgName)
+			cleanupOut, cerr := runCleanup(ctx, pkgName)
+			if cleanupOut != "" {
+				for _, l := range strings.Split(strings.TrimRight(cleanupOut, "\n"), "\n") {
+					send("", "[cleanup] "+l)
+				}
+			}
+			if cerr != nil {
+				send("", "[cleanup] 失败: "+cerr.Error())
+			} else {
+				send("", "[cleanup] 残留已移除,可重新尝试安装")
+			}
+		}
+	} else if exitCode == 0 {
+		verdict = "unknown"
+		verdictDetail = "未取到包名,无法二次校验"
+	}
+
+	if exitCode != 0 && verdict == "success" {
+		// apt failed but dpkg shows installed — odd, treat as partial.
+		verdict = "partial"
+	}
+
+	send("status", verdict+"|"+verdictDetail)
 	send("exit", fmt.Sprintf("%d", exitCode))
 
 	outcome := "ok"
-	if exitCode != 0 {
+	if verdict != "success" || exitCode != 0 {
 		outcome = "error"
 	}
 	if h.audit != nil {
@@ -186,8 +253,58 @@ func (h *Handler) installDeb(w http.ResponseWriter, r *http.Request) {
 				"id":        job.ID,
 				"path":      abs,
 				"name":      job.FileName,
+				"package":   pkgName,
 				"exit_code": exitCode,
+				"verdict":   verdict,
 			},
 		})
 	}
+}
+
+// readDebPackageName runs `dpkg-deb -f <path> Package` to pull the package
+// name out of the .deb's control file. Returns empty + error if dpkg-deb
+// is missing or the file is not a valid .deb archive.
+func readDebPackageName(debPath string) (string, error) {
+	cmd := exec.Command("dpkg-deb", "-f", debPath, "Package")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	name := strings.TrimSpace(string(out))
+	if name == "" {
+		return "", errors.New("dpkg-deb returned empty Package field")
+	}
+	return name, nil
+}
+
+// queryDpkgStatus runs `dpkg-query -W -f=${Status} <pkg>` and returns the
+// status string (e.g. "install ok installed", "install ok half-installed").
+// Returns ("", nil) when the package is not known to dpkg at all.
+func queryDpkgStatus(ctx context.Context, pkg string) (string, error) {
+	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Status}", pkg)
+	out, err := cmd.Output()
+	if err != nil {
+		// dpkg-query exits 1 when the package is unknown — treat as ""
+		// rather than an error, so callers can map it to "failed".
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// runCleanup removes a half-installed package, forcing past the
+// reinst-required flag dpkg sets after a failed unpack. We run dpkg
+// directly (not apt) because apt refuses to operate on packages in this
+// state and we don't want to also pull in side-effects on dependencies.
+func runCleanup(ctx context.Context, pkg string) (string, error) {
+	cmd := exec.CommandContext(ctx, "sudo", "-n",
+		"dpkg", "--remove", "--force-remove-reinstreq", pkg)
+	cmd.Env = append(cmd.Env,
+		"DEBIAN_FRONTEND=noninteractive",
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
