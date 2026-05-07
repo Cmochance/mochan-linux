@@ -72,6 +72,10 @@ export const WhiteNoise = lazy(() => import('./WhiteNoise'));
 export const Pomodoro = lazy(() => import('./Pomodoro'));
 export const HabitTracker = lazy(() => import('./HabitTracker'));
 
+// GUI bridge (xpra)
+export const AppsLauncher = lazy(() => import('./AppsLauncher'));
+export const GUIRunner = lazy(() => import('./GUIRunner'));
+
 // Map app IDs to lazy components
 export const lazyAppComponents: Record<string, React.LazyExoticComponent<React.ComponentType<{ windowId?: string }>>> = {
   filemanager: FileManager,
@@ -132,4 +136,6 @@ export const lazyAppComponents: Record<string, React.LazyExoticComponent<React.C
   whitenoise: WhiteNoise,
   pomodoro: Pomodoro,
   habittracker: HabitTracker,
+  appslauncher: AppsLauncher,
+  guirunner: GUIRunner,
 };
