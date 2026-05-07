@@ -122,7 +122,15 @@ func (h *Handler) installDeb(w http.ResponseWriter, r *http.Request) {
 	if pkgName != "" {
 		send("", fmt.Sprintf("==> dpkg 包名: %s", pkgName))
 	}
-	send("", "==> 命令: sudo -n apt-get install -y -- "+abs)
+	// We wrap apt with `systemd-run --pipe --wait --collect` so that the
+	// child runs in its OWN transient unit instead of inheriting this
+	// service's mount namespace. This service hardens itself with
+	// ProtectSystem=full (mounts /usr/, /boot/, /etc/ read-only on its
+	// view), and a sudo'd child would still be confined to that view —
+	// dpkg would fail with "Read-only file system" while unpacking into
+	// /usr/lib. systemd-run breaks out cleanly and keeps the parent's
+	// hardening intact.
+	send("", "==> 命令: sudo -n systemd-run --pipe --wait --collect --quiet -- apt-get install -y -- "+abs)
 	send("", "")
 
 	// 10-minute hard cap. apt downloading transitive deps over a slow
@@ -136,13 +144,17 @@ func (h *Handler) installDeb(w http.ResponseWriter, r *http.Request) {
 	// them caused the original codex-app-transfer install to leave
 	// libwebkit2gtk-4.1-0 in iHR state on dochenmo.
 	cmd := exec.CommandContext(ctx, "sudo", "-n",
+		"systemd-run", "--pipe", "--wait", "--collect", "--quiet",
+		"--setenv=DEBIAN_FRONTEND=noninteractive",
+		"--setenv=LC_ALL=C.UTF-8",
+		"--setenv=LANG=C.UTF-8",
+		"--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"--",
 		"apt-get", "install", "-y", "--", abs)
-	cmd.Env = append(cmd.Env,
-		"DEBIAN_FRONTEND=noninteractive",
-		"LC_ALL=C.UTF-8",
-		"LANG=C.UTF-8",
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-	)
+	// systemd-run carries env via --setenv; we don't need to populate
+	// cmd.Env here. (Leaving it default keeps the child inheriting the
+	// mochan service's environment, which doesn't matter once apt is in
+	// a separate unit anyway.)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -310,13 +322,17 @@ func queryDpkgStatus(ctx context.Context, pkg string) (string, error) {
 // reinst-required flag dpkg sets after a failed unpack. We run dpkg
 // directly (not apt) because apt refuses to operate on packages in this
 // state and we don't want to also pull in side-effects on dependencies.
+//
+// Wrapped with systemd-run for the same namespace-escape reason as
+// the apt path: dpkg --remove also rewrites under /usr/lib, which is
+// read-only inside the mochan service's own mount namespace.
 func runCleanup(ctx context.Context, pkg string) (string, error) {
 	cmd := exec.CommandContext(ctx, "sudo", "-n",
+		"systemd-run", "--pipe", "--wait", "--collect", "--quiet",
+		"--setenv=DEBIAN_FRONTEND=noninteractive",
+		"--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"--",
 		"dpkg", "--remove", "--force-remove-reinstreq", pkg)
-	cmd.Env = append(cmd.Env,
-		"DEBIAN_FRONTEND=noninteractive",
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-	)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
