@@ -413,6 +413,7 @@ import {
   NotebookPen,
   Waves,
   CheckCircle2,
+  AppWindow,
 } from 'lucide-react';
 
 const ICON_MAP: Record<string, React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>> = {
@@ -424,6 +425,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ size?: number; strokeWidth?
   GitBranch, Braces, Search, Plug, Pipette, Code2, QrCode, KeyRound,
   CircleDot, Grid3X3, LayoutGrid, Grid2X2, Snail, Combine, Puzzle,
   BookMarked, NotebookPen, Waves, CheckCircle2,
+  AppWindow,
 };
 
 function AppIcon({ iconName, size = 14 }: { iconName: string; size?: number }) {

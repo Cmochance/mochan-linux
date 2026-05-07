@@ -44,6 +44,7 @@ export const APPS: AppDefinition[] = [
   { id: 'taskmanager', name: '任务管理器', nameEn: 'Task Manager', icon: 'ListTodo', category: 'system', description: '进程管理和监控' },
   { id: 'auditlog', name: '审计日志', nameEn: 'Audit Log', icon: 'ScrollText', category: 'system', description: '登录和敏感操作审计' },
   { id: 'weather', name: '天气', nameEn: 'Weather', icon: 'CloudSun', category: 'system', description: '天气预报' },
+  { id: 'appslauncher', name: 'GUI 应用', nameEn: 'GUI Apps', icon: 'AppWindow', category: 'system', description: '通过 xpra 在浏览器里运行 Linux GUI 应用' },
 
   // Office (8)
   { id: 'texteditor', name: '文本编辑器', nameEn: 'Text Editor', icon: 'FileText', category: 'office', description: '纯文本编辑器' },

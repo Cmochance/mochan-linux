@@ -35,6 +35,7 @@ import (
 	"github.com/alysechen/mochan-linux/server/internal/filetransfer"
 	"github.com/alysechen/mochan-linux/server/internal/fsapi"
 	"github.com/alysechen/mochan-linux/server/internal/gitclient"
+	"github.com/alysechen/mochan-linux/server/internal/guiapps"
 	"github.com/alysechen/mochan-linux/server/internal/mailclient"
 	"github.com/alysechen/mochan-linux/server/internal/pty"
 	"github.com/alysechen/mochan-linux/server/internal/rss"
@@ -214,6 +215,8 @@ func runServer() error {
 	weatherHandler := weather.NewHandler(weatherCache, auditLog)
 	fileTransferHandler := filetransfer.NewHandler(auditLog)
 	mailHandler := mailclient.NewHandler(auditLog)
+	guiAppsManager := guiapps.NewManager()
+	guiAppsHandler := guiapps.NewHandler(guiAppsManager, auditLog)
 
 	staticFS, err := static.FS()
 	if err != nil {
@@ -265,7 +268,17 @@ func runServer() error {
 				sr.Route("/audit", audit.NewHandler(auditLog).Mount)
 			})
 			p.Route("/settings", settingsHandler.Mount)
+			p.Route("/gui", guiAppsHandler.MountAdmin)
 		})
+	})
+
+	// xpra HTML5 reverse proxy lives OUTSIDE /api so the iframe-loaded
+	// content (HTML, JS, CSS, websocket) sees its own URL space cleanly.
+	// We still apply the same auth middleware as /api/* — it's mounted
+	// here as a sibling group on the root router.
+	r.Group(func(g chi.Router) {
+		g.Use(authn.Middleware)
+		guiAppsHandler.MountProxy(g)
 	})
 
 	ptyHandler := pty.New(authn, 5*time.Minute)
