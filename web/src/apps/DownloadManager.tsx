@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Download, Plus, X, RotateCw, Trash2, CheckCircle, AlertCircle, Clock,
-  File, FileText, Image, Music, Video, Archive, Code, Search
+  File, FileText, Image, Music, Video, Archive, Code, Search, FolderOpen,
+  Package
 } from 'lucide-react';
 import { downloadsClient, type DownloadJob, type DownloadStatus } from '../lib/downloads';
 import { fsClient, formatSize } from '../lib/fs';
+import { openInFileManager } from '../lib/openFile';
+import { ApiError } from '../lib/api';
 
 interface DownloadManagerProps {
   windowId?: string;
@@ -92,6 +95,15 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+interface InstallState {
+  jobId: string;
+  fileName: string;
+  lines: string[];
+  done: boolean;
+  exitCode: number | null;
+  error: string | null;
+}
+
 export default function DownloadManager({ windowId: _windowId }: DownloadManagerProps) {
   const [downloads, setDownloads] = useState<DownloadJob[]>([]);
   const [filter, setFilter] = useState<Filter>('all');
@@ -102,6 +114,9 @@ export default function DownloadManager({ windowId: _windowId }: DownloadManager
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [busyId, setBusyId] = useState('');
+  const [install, setInstall] = useState<InstallState | null>(null);
+  const installAbortRef = useRef<AbortController | null>(null);
+  const installLogRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -178,6 +193,46 @@ export default function DownloadManager({ windowId: _windowId }: DownloadManager
     void runJobAction(id, () => downloadsClient.remove(id));
   };
 
+  const installDeb = async (job: DownloadJob) => {
+    if (install && !install.done) return; // another install in progress in this window
+    const ctrl = new AbortController();
+    installAbortRef.current = ctrl;
+    setInstall({ jobId: job.id, fileName: job.file_name, lines: [], done: false, exitCode: null, error: null });
+    try {
+      const code = await downloadsClient.installDeb(
+        job.id,
+        (line) => {
+          setInstall((s) => (s && s.jobId === job.id ? { ...s, lines: [...s.lines, line] } : s));
+        },
+        ctrl.signal,
+      );
+      setInstall((s) => (s && s.jobId === job.id ? { ...s, done: true, exitCode: code } : s));
+    } catch (err) {
+      if (ctrl.signal.aborted) {
+        setInstall((s) => (s && s.jobId === job.id ? { ...s, done: true, exitCode: -1, error: '已取消' } : s));
+      } else {
+        const msg = err instanceof ApiError ? (err.body || `HTTP ${err.status}`) : errorMessage(err);
+        setInstall((s) => (s && s.jobId === job.id ? { ...s, done: true, exitCode: -1, error: msg } : s));
+      }
+    } finally {
+      installAbortRef.current = null;
+    }
+  };
+
+  const closeInstall = () => {
+    if (install && !install.done) {
+      installAbortRef.current?.abort();
+    }
+    setInstall(null);
+  };
+
+  // Auto-scroll the install log to the bottom as new lines stream in.
+  useEffect(() => {
+    if (!install) return;
+    const el = installLogRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [install]);
+
   const clearCompleted = async () => {
     const completed = downloads.filter((d) => d.status === 'completed');
     if (completed.length === 0) return;
@@ -206,7 +261,7 @@ export default function DownloadManager({ windowId: _windowId }: DownloadManager
   const totalKnownSize = downloads.reduce((sum, d) => sum + Math.max(0, d.size_bytes), 0);
 
   return (
-    <div className="w-full h-full flex flex-col" style={{ backgroundColor: 'var(--ink-50)' }}>
+    <div className="w-full h-full flex flex-col relative" style={{ backgroundColor: 'var(--ink-50)' }}>
       <div className="flex items-center gap-2 px-4 py-2 flex-shrink-0" style={{ backgroundColor: 'var(--ink-100)', borderBottom: '1px solid var(--ink-200)' }}>
         <button
           onClick={() => setShowAddForm(!showAddForm)}
@@ -375,15 +430,34 @@ export default function DownloadManager({ windowId: _windowId }: DownloadManager
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
                     {d.status === 'completed' && d.output_path && (
-                      <a
-                        href={fsClient.downloadURL(d.output_path)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="p-1.5 rounded transition-all duration-150 hover:bg-black/5"
-                        title="打开文件 (Open)"
-                      >
-                        <Download size={14} style={{ color: 'var(--success)' }} />
-                      </a>
+                      <>
+                        {d.file_name.toLowerCase().endsWith('.deb') && (
+                          <button
+                            onClick={() => void installDeb(d)}
+                            disabled={!!install && !install.done}
+                            className="p-1.5 rounded transition-all duration-150 hover:bg-black/5 disabled:opacity-40"
+                            title="用 apt 安装 (Install with apt)"
+                          >
+                            <Package size={14} style={{ color: 'var(--cinnabar)' }} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => openInFileManager(d.output_path!)}
+                          className="p-1.5 rounded transition-all duration-150 hover:bg-black/5"
+                          title="在文件管理器中打开 (Show in File Manager)"
+                        >
+                          <FolderOpen size={14} style={{ color: 'var(--ink-600)' }} />
+                        </button>
+                        <a
+                          href={fsClient.downloadURL(d.output_path)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="p-1.5 rounded transition-all duration-150 hover:bg-black/5"
+                          title="下载到本机 (Download to your device)"
+                        >
+                          <Download size={14} style={{ color: 'var(--success)' }} />
+                        </a>
+                      </>
                     )}
                     {isActive(d.status) && (
                       <button
@@ -439,6 +513,89 @@ export default function DownloadManager({ windowId: _windowId }: DownloadManager
           已知总大小: {formatSize(totalKnownSize)}
         </span>
       </div>
+
+      {install && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center"
+          style={{ backgroundColor: 'rgba(26,26,26,0.45)' }}
+          onClick={(e) => {
+            // backdrop click only closes once the install is finished;
+            // mid-install clicks could lose the only copy of the log.
+            if (e.target === e.currentTarget && install.done) closeInstall();
+          }}
+        >
+          <div
+            className="flex w-[680px] max-w-[92%] flex-col rounded-lg shadow-lg"
+            style={{ backgroundColor: 'var(--ink-50)', border: '1px solid var(--ink-300)', maxHeight: '80%' }}
+          >
+            <div
+              className="flex items-center justify-between px-4 py-2"
+              style={{ borderBottom: '1px solid var(--ink-200)', backgroundColor: 'var(--ink-100)' }}
+            >
+              <div className="flex items-center gap-2">
+                <Package size={16} style={{ color: 'var(--cinnabar)' }} />
+                <span className="text-body-sm font-medium" style={{ color: 'var(--ink-800)' }}>
+                  apt 安装 · {install.fileName}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {!install.done && (
+                  <span className="text-caption" style={{ color: 'var(--cinnabar)' }}>运行中…</span>
+                )}
+                {install.done && install.exitCode === 0 && (
+                  <span className="text-caption inline-flex items-center gap-1" style={{ color: 'var(--success)' }}>
+                    <CheckCircle size={12} /> 安装完成
+                  </span>
+                )}
+                {install.done && install.exitCode !== 0 && (
+                  <span className="text-caption inline-flex items-center gap-1" style={{ color: 'var(--cinnabar-light)' }}>
+                    <AlertCircle size={12} /> 失败 (exit {install.exitCode}{install.error ? ` · ${install.error}` : ''})
+                  </span>
+                )}
+                <button
+                  onClick={closeInstall}
+                  className="p-1 rounded hover:bg-black/5"
+                  title={install.done ? '关闭' : '取消'}
+                >
+                  <X size={14} style={{ color: 'var(--ink-500)' }} />
+                </button>
+              </div>
+            </div>
+            <div
+              ref={installLogRef}
+              className="flex-1 overflow-auto px-4 py-3 font-mono text-xs"
+              style={{ backgroundColor: '#1a1a1a', color: '#e5e5e5', minHeight: '240px' }}
+            >
+              {install.lines.length === 0 && !install.done && (
+                <div style={{ color: '#888' }}>等待 apt 输出…</div>
+              )}
+              {install.lines.map((l, i) => (
+                <div key={i} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{l}</div>
+              ))}
+            </div>
+            <div
+              className="flex items-center justify-between px-4 py-2"
+              style={{ borderTop: '1px solid var(--ink-200)', backgroundColor: 'var(--ink-100)' }}
+            >
+              <span className="text-caption" style={{ color: 'var(--ink-500)' }}>
+                {install.lines.length} 行 · {install.done ? `完成 (exit ${install.exitCode})` : '安装进行中'}
+              </span>
+              <button
+                onClick={closeInstall}
+                disabled={!install.done && installAbortRef.current === null}
+                className="px-3 py-1 rounded text-body-sm"
+                style={{
+                  backgroundColor: install.done ? 'var(--ink-800)' : 'transparent',
+                  color: install.done ? 'var(--ink-50)' : 'var(--ink-700)',
+                  border: install.done ? 'none' : '1px solid var(--ink-300)',
+                }}
+              >
+                {install.done ? '关闭' : '取消并关闭'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

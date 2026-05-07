@@ -15,6 +15,8 @@ import {
   BatteryLow,
   LogOut,
   User,
+  KeyRound,
+  Mail,
 } from 'lucide-react';
 
 export function StatusBar() {
@@ -25,8 +27,15 @@ export function StatusBar() {
   const language = useSystemStore((s) => s.language);
   const toggleLanguage = useSystemStore((s) => s.toggleLanguage);
   const username = useAuthStore((s) => s.username);
+  const role = useAuthStore((s) => s.role);
   const logout = useAuthStore((s) => s.logout);
+  const openWindow = useWindowStore((s) => s.openWindow);
   const [showUser, setShowUser] = useState(false);
+
+  const openSettingsTab = (tab: 'account' | 'invites') => {
+    setShowUser(false);
+    openWindow('settings', '设置', { width: 920, height: 640, payload: { initialTab: tab } });
+  };
   const volume = useSystemStore((s) => s.volume);
   const setVolume = useSystemStore((s) => s.setVolume);
   const launcherOpen = useSystemStore((s) => s.launcherOpen);
@@ -117,6 +126,29 @@ export function StatusBar() {
                     {username ?? '-'}
                   </span>
                 </div>
+                <button
+                  className="w-full flex items-center gap-2 px-3 py-2 text-caption transition-colors"
+                  style={{ color: 'var(--ink-700)' }}
+                  onClick={() => openSettingsTab('account')}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--wash-light)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                >
+                  <KeyRound size={14} strokeWidth={1.5} />
+                  账户与密码
+                </button>
+                {role === 'admin' && (
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-2 text-caption transition-colors"
+                    style={{ color: 'var(--ink-700)' }}
+                    onClick={() => openSettingsTab('invites')}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--wash-light)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                  >
+                    <Mail size={14} strokeWidth={1.5} />
+                    邀请码管理
+                  </button>
+                )}
+                <div className="border-t" style={{ borderColor: 'var(--glass-border)' }} />
                 <button
                   className="w-full flex items-center gap-2 px-3 py-2 text-caption transition-colors"
                   style={{ color: 'var(--ink-700)' }}

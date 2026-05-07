@@ -246,6 +246,7 @@ func runServer() error {
 		api.Group(func(p chi.Router) {
 			p.Use(authn.Middleware)
 			p.Get("/me", meHandler)
+			p.Post("/auth/change-password", changePasswordHandler(authn, db, auditLog))
 			accountsHandler.MountAdmin(p)
 			p.Route("/app-state", appStateHandler.Mount)
 			p.Route("/api-tester", apiTesterHandler.Mount)
@@ -394,6 +395,67 @@ func logoutHandler(al *audit.Logger, a *auth.Authenticator) http.HandlerFunc {
 			al.Log(r.Context(), audit.Event{
 				Type:    "auth.logout",
 				Actor:   actor,
+				IP:      audit.ClientIP(r),
+				Outcome: "ok",
+			})
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func changePasswordHandler(a *auth.Authenticator, db *userdb.DB, al *audit.Logger) http.HandlerFunc {
+	type req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		c, ok := auth.ClaimsFrom(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var body req
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if len(body.NewPassword) < 8 || len(body.NewPassword) > 128 {
+			http.Error(w, "new password length must be 8-128", http.StatusBadRequest)
+			return
+		}
+		if body.CurrentPassword == body.NewPassword {
+			http.Error(w, "new password must differ from current", http.StatusBadRequest)
+			return
+		}
+		// Re-verify current password against the user identified by the JWT.
+		// Use Subject (username) so the lookup goes through the same code path
+		// as login — keeps inactive-account behavior consistent.
+		if _, err := a.Verify(r.Context(), c.Subject, body.CurrentPassword); err != nil {
+			time.Sleep(500 * time.Millisecond)
+			if al != nil {
+				al.Log(r.Context(), audit.Event{
+					Type:    "auth.password.change",
+					Actor:   c.Subject,
+					IP:      audit.ClientIP(r),
+					Outcome: "deny",
+				})
+			}
+			http.Error(w, "current password incorrect", http.StatusUnauthorized)
+			return
+		}
+		hash, err := auth.HashPassword(body.NewPassword)
+		if err != nil {
+			http.Error(w, "hash failed", http.StatusInternalServerError)
+			return
+		}
+		if err := db.UpdatePassword(r.Context(), c.UID, hash); err != nil {
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		if al != nil {
+			al.Log(r.Context(), audit.Event{
+				Type:    "auth.password.change",
+				Actor:   c.Subject,
 				IP:      audit.ClientIP(r),
 				Outcome: "ok",
 			})

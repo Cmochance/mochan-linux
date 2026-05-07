@@ -1,23 +1,49 @@
 import { useEffect, useRef, useState } from 'react';
+import { useWindowStore } from '@/stores/useWindowStore';
 import {
   Palette, Globe, Info, Image as ImageIcon, Upload, Trash2,
   Check, Server, Cpu, MemoryStick, HardDrive, Activity, ExternalLink,
+  KeyRound, UserRound, Mail, Copy, RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { useSystemStore } from '@/stores/useSystemStore';
 import { useDesktopStore } from '@/stores/useDesktopStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { settingsClient, wallpaperUrl, type Wallpaper } from '@/lib/settings';
 import { sysClient, formatBytes, formatUptime, type SysStat } from '@/lib/sys';
 import { ApiError } from '@/lib/api';
+import { accountsClient, type Invite } from '@/lib/accounts';
 
-type Tab = 'appearance' | 'language' | 'about';
+type Tab = 'appearance' | 'account' | 'invites' | 'language' | 'about';
 
-export default function Settings() {
-  const [tab, setTab] = useState<Tab>('appearance');
+interface SettingsProps {
+  windowId?: string;
+}
+
+const VALID_TABS: readonly Tab[] = ['appearance', 'account', 'invites', 'language', 'about'];
+
+function readInitialTab(windowId: string | undefined): Tab {
+  if (!windowId) return 'appearance';
+  const win = useWindowStore.getState().getWindowById(windowId);
+  const t = win?.payload?.initialTab;
+  if (typeof t === 'string' && (VALID_TABS as readonly string[]).includes(t)) {
+    return t as Tab;
+  }
+  return 'appearance';
+}
+
+export default function Settings({ windowId }: SettingsProps) {
+  const role = useAuthStore((s) => s.role);
+  const [tab, setTab] = useState<Tab>(() => readInitialTab(windowId));
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'appearance', label: '外观', icon: <Palette className="h-4 w-4" /> },
+    { id: 'account', label: '账户', icon: <UserRound className="h-4 w-4" /> },
+    ...(role === 'admin'
+      ? [{ id: 'invites' as Tab, label: '邀请码', icon: <Mail className="h-4 w-4" /> }]
+      : []),
     { id: 'language', label: '语言', icon: <Globe className="h-4 w-4" /> },
     { id: 'about', label: '关于', icon: <Info className="h-4 w-4" /> },
   ];
@@ -45,6 +71,8 @@ export default function Settings() {
       </nav>
       <div className="flex-1 overflow-auto p-6">
         {tab === 'appearance' && <AppearanceTab />}
+        {tab === 'account' && <AccountTab />}
+        {tab === 'invites' && role === 'admin' && <InvitesTab />}
         {tab === 'language' && <LanguageTab />}
         {tab === 'about' && <AboutTab />}
       </div>
@@ -349,4 +377,306 @@ function toMsg(e: unknown): string {
   if (e instanceof ApiError) return e.body || `错误 ${e.status}`;
   if (e instanceof Error) return e.message;
   return String(e);
+}
+
+// ----- Account: change password -----
+
+function AccountTab() {
+  const username = useAuthStore((s) => s.username);
+  const email = useAuthStore((s) => s.email);
+  const role = useAuthStore((s) => s.role);
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+    if (next.length < 8 || next.length > 128) {
+      setError('新密码长度需在 8-128 之间');
+      return;
+    }
+    if (next !== confirm) {
+      setError('两次输入的新密码不一致');
+      return;
+    }
+    if (next === current) {
+      setError('新密码必须与当前密码不同');
+      return;
+    }
+    setBusy(true);
+    try {
+      await accountsClient.changePassword(current, next);
+      setSuccess('密码已更新,下次登录请使用新密码');
+      setCurrent('');
+      setNext('');
+      setConfirm('');
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        setError('当前密码不正确');
+      } else {
+        setError(toMsg(e));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <Section title="账户信息">
+        <div className="grid grid-cols-[120px_1fr] gap-y-2 text-sm">
+          <span style={{ color: 'var(--ink-500)' }}>用户名</span>
+          <span className="font-mono" style={{ color: 'var(--ink-800)' }}>{username || '-'}</span>
+          <span style={{ color: 'var(--ink-500)' }}>邮箱</span>
+          <span className="font-mono" style={{ color: 'var(--ink-800)' }}>{email || '(未绑定)'}</span>
+          <span style={{ color: 'var(--ink-500)' }}>角色</span>
+          <span className="font-mono" style={{ color: 'var(--ink-800)' }}>{role || 'user'}</span>
+        </div>
+      </Section>
+
+      <Section title="修改密码">
+        <form onSubmit={onSubmit} className="flex max-w-md flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="cur_pw">当前密码</Label>
+            <Input id="cur_pw" type="password" autoComplete="current-password"
+              value={current} onChange={(e) => setCurrent(e.target.value)}
+              disabled={busy} required />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="new_pw">新密码 (至少 8 位)</Label>
+            <Input id="new_pw" type="password" autoComplete="new-password" minLength={8} maxLength={128}
+              value={next} onChange={(e) => setNext(e.target.value)}
+              disabled={busy} required />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="confirm_pw">确认新密码</Label>
+            <Input id="confirm_pw" type="password" autoComplete="new-password" minLength={8} maxLength={128}
+              value={confirm} onChange={(e) => setConfirm(e.target.value)}
+              disabled={busy} required />
+          </div>
+          {error && (
+            <div className="text-sm" style={{ color: '#b3392f' }} role="alert">{error}</div>
+          )}
+          {success && (
+            <div className="text-sm" style={{ color: 'var(--success, #4a7c59)' }}>{success}</div>
+          )}
+          <div>
+            <Button type="submit" disabled={busy}>
+              <KeyRound className="mr-1 h-4 w-4" />
+              {busy ? '更新中…' : '更新密码'}
+            </Button>
+          </div>
+        </form>
+      </Section>
+    </div>
+  );
+}
+
+// ----- Invites (admin only): manage registration codes -----
+
+function InvitesTab() {
+  const [invites, setInvites] = useState<Invite[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [bindEmail, setBindEmail] = useState('');
+  const [ttlDays, setTtlDays] = useState<number>(7);
+  const [creating, setCreating] = useState(false);
+  const [justCreated, setJustCreated] = useState<Invite | null>(null);
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      setInvites(await accountsClient.listInvites());
+      setError(null);
+    } catch (e) {
+      setError(toMsg(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void refresh(); }, []);
+
+  const onCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (creating) return;
+    setError(null);
+    setCreating(true);
+    try {
+      const ttl = Math.max(1, Math.min(720, ttlDays * 24));
+      const inv = await accountsClient.createInvite({
+        email: bindEmail.trim() || undefined,
+        ttl_hours: ttl,
+      });
+      setJustCreated(inv);
+      setBindEmail('');
+      await refresh();
+    } catch (e) {
+      setError(toMsg(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const copyCode = async (inv: Invite) => {
+    try {
+      await navigator.clipboard.writeText(inv.code);
+      setCopiedId(inv.id);
+      setTimeout(() => setCopiedId((c) => (c === inv.id ? null : c)), 1500);
+    } catch {
+      // clipboard blocked; surface the error inline
+      setError('剪贴板不可用,请手动复制');
+    }
+  };
+
+  const revoke = async (inv: Invite) => {
+    if (!window.confirm(`撤销邀请码 ${inv.code}?未使用的邀请将立即失效。`)) return;
+    setBusyId(inv.id);
+    try {
+      await accountsClient.deleteInvite(inv.id);
+      await refresh();
+    } catch (e) {
+      setError(toMsg(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div>
+      <Section title="生成新邀请码">
+        <form onSubmit={onCreate} className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="bind_email">绑定邮箱 (可选)</Label>
+            <Input id="bind_email" type="email" placeholder="留空则任意邮箱可用"
+              value={bindEmail} onChange={(e) => setBindEmail(e.target.value)}
+              disabled={creating} className="w-64" />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="ttl_days">有效期 (天, 1-30)</Label>
+            <Input id="ttl_days" type="number" min={1} max={30}
+              value={ttlDays} onChange={(e) => setTtlDays(Number(e.target.value) || 1)}
+              disabled={creating} className="w-28" />
+          </div>
+          <Button type="submit" disabled={creating}>
+            <Mail className="mr-1 h-4 w-4" />
+            {creating ? '生成中…' : '生成邀请码'}
+          </Button>
+        </form>
+        {justCreated && (
+          <div className="mt-3 rounded border p-3"
+            style={{ borderColor: 'var(--ink-300)', backgroundColor: 'var(--ink-50)' }}>
+            <div className="text-xs" style={{ color: 'var(--ink-500)' }}>新邀请码 (一次性,请妥善分发)</div>
+            <div className="mt-1 flex items-center gap-2">
+              <code className="rounded bg-[var(--ink-100)] px-2 py-1 font-mono text-sm">{justCreated.code}</code>
+              <Button size="sm" variant="outline" onClick={() => copyCode(justCreated)}>
+                <Copy className="mr-1 h-3.5 w-3.5" />
+                复制
+              </Button>
+              <span className="text-xs" style={{ color: 'var(--ink-500)' }}>
+                到期: {formatTs(justCreated.expires_at)}
+                {justCreated.email ? ` · 仅限 ${justCreated.email}` : ' · 任意邮箱'}
+              </span>
+            </div>
+          </div>
+        )}
+      </Section>
+
+      <Section title="历史邀请码">
+        <div className="mb-2 flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={loading}>
+            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            刷新
+          </Button>
+          <span className="text-xs" style={{ color: 'var(--ink-500)' }}>
+            共 {invites.length} 条 · 已使用 {invites.filter((i) => i.used).length} · 已过期 {invites.filter((i) => i.expired).length}
+          </span>
+        </div>
+        {error && (
+          <div className="mb-2 rounded border border-red-300 bg-red-50 p-2 text-sm text-red-700">{error}</div>
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead style={{ color: 'var(--ink-500)' }}>
+              <tr className="border-b" style={{ borderColor: 'var(--ink-200)' }}>
+                <th className="px-2 py-1.5 text-left font-medium">邀请码</th>
+                <th className="px-2 py-1.5 text-left font-medium">绑定邮箱</th>
+                <th className="px-2 py-1.5 text-left font-medium">状态</th>
+                <th className="px-2 py-1.5 text-left font-medium">使用者</th>
+                <th className="px-2 py-1.5 text-left font-medium">创建</th>
+                <th className="px-2 py-1.5 text-left font-medium">到期</th>
+                <th className="px-2 py-1.5 text-right font-medium">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {invites.length === 0 && !loading && (
+                <tr>
+                  <td colSpan={7} className="px-2 py-6 text-center" style={{ color: 'var(--ink-400)' }}>
+                    （暂无邀请码）
+                  </td>
+                </tr>
+              )}
+              {invites.map((inv) => {
+                const status: { label: string; color: string } = inv.used
+                  ? { label: '已使用', color: 'var(--ink-500)' }
+                  : inv.expired
+                    ? { label: '已过期', color: '#b3392f' }
+                    : { label: '可用', color: 'var(--success, #4a7c59)' };
+                return (
+                  <tr key={inv.id} className="border-b" style={{ borderColor: 'var(--ink-100)' }}>
+                    <td className="px-2 py-1.5">
+                      <code className="font-mono text-xs">{inv.code}</code>
+                    </td>
+                    <td className="px-2 py-1.5" style={{ color: 'var(--ink-700)' }}>
+                      {inv.email || <span style={{ color: 'var(--ink-400)' }}>任意</span>}
+                    </td>
+                    <td className="px-2 py-1.5" style={{ color: status.color }}>{status.label}</td>
+                    <td className="px-2 py-1.5 font-mono text-xs" style={{ color: 'var(--ink-700)' }}>
+                      {inv.used_by_username || '-'}
+                    </td>
+                    <td className="px-2 py-1.5 text-xs tabular-nums" style={{ color: 'var(--ink-500)' }}>
+                      {formatTs(inv.created_at)}
+                    </td>
+                    <td className="px-2 py-1.5 text-xs tabular-nums" style={{ color: 'var(--ink-500)' }}>
+                      {formatTs(inv.expires_at)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right">
+                      {!inv.used && (
+                        <div className="flex justify-end gap-1">
+                          <Button size="sm" variant="outline"
+                            onClick={() => void copyCode(inv)}>
+                            <Copy className="mr-1 h-3.5 w-3.5" />
+                            {copiedId === inv.id ? '已复制' : '复制'}
+                          </Button>
+                          <Button size="sm" variant="outline"
+                            onClick={() => void revoke(inv)}
+                            disabled={busyId === inv.id}>
+                            <Trash2 className="mr-1 h-3.5 w-3.5" />
+                            撤销
+                          </Button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+function formatTs(s: string): string {
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }

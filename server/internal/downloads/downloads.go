@@ -554,6 +554,7 @@ func (h *Handler) Mount(r chi.Router) {
 	r.Post("/{id}/cancel", h.cancel)
 	r.Post("/{id}/retry", h.retry)
 	r.Delete("/{id}", h.delete)
+	h.MountInstall(r)
 }
 
 func (h *Handler) list(w http.ResponseWriter, _ *http.Request) {
