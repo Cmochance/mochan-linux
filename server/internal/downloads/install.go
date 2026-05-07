@@ -191,7 +191,9 @@ func (h *Handler) installDeb(w http.ResponseWriter, r *http.Request) {
 	// sufficient: dpkg can leave a package in iHR (half-installed +
 	// reinst-required) when a maintainer script fails mid-unpack, and
 	// apt will still report success. dpkg-query is the source of truth.
-	verdict := "success" // success | partial | failed | unknown
+	// Default is `unknown` so a missing dpkg-query / unparseable .deb
+	// never silently degrades into a "success" claim.
+	verdict := "unknown" // success | partial | failed | unknown
 	verdictDetail := ""
 	if pkgName != "" {
 		send("", "")
@@ -226,13 +228,23 @@ func (h *Handler) installDeb(w http.ResponseWriter, r *http.Request) {
 				send("", "[cleanup] 残留已移除,可重新尝试安装")
 			}
 		}
-	} else if exitCode == 0 {
-		verdict = "unknown"
-		verdictDetail = "未取到包名,无法二次校验"
+	} else {
+		// No package name to verify against. If apt also exited nonzero
+		// this is a hard failure (corrupt .deb, dpkg-deb missing, etc.) —
+		// don't soften it to "partial" or "unknown".
+		if exitCode != 0 {
+			verdict = "failed"
+			verdictDetail = "无法读取 .deb 包名 + apt 非零退出"
+		} else {
+			verdict = "unknown"
+			verdictDetail = "未取到包名,无法二次校验"
+		}
 	}
 
+	// apt failed but dpkg ended up with the package installed — odd
+	// (script reported failure post-unpack); flag as partial so the
+	// operator looks at the log instead of trusting the green tick.
 	if exitCode != 0 && verdict == "success" {
-		// apt failed but dpkg shows installed — odd, treat as partial.
 		verdict = "partial"
 	}
 

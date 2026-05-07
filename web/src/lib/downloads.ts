@@ -129,6 +129,16 @@ export const downloadsClient = {
       }
     }
     if (dataLines.length > 0) flushFrame();
+    // No `status` frame received but apt exited nonzero — treat as a
+    // hard failure rather than "unknown". Common causes: server-side
+    // pipe error before status was emitted, or the SSE stream was
+    // truncated mid-way. Hiding the nonzero exit behind "状态未知"
+    // downplays a real install error.
+    if (verdict === 'unknown' && exitCode !== 0) {
+      verdict = 'failed';
+      detail = detail || `apt exit ${exitCode} (no status frame)`;
+      onStatus?.(verdict, detail);
+    }
     return { exitCode, verdict, detail };
   },
 };
