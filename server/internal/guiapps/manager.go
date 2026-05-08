@@ -96,11 +96,30 @@ func (m *Manager) Launch(ctx context.Context, command, actor string) (*Session, 
 	// NOT inside mochan.service's mount namespace. ProtectSystem=full on
 	// the parent unit would otherwise leave Xvfb's auth file under
 	// /root/.Xauthority unwritable.
+	//
+	// --setenv= variables are inherited by xpra and (because xpra spawns
+	// the GUI app as a child of itself) by the GUI app too. We force
+	// software rendering across the entire stack — without these, a
+	// WebKit2GTK 4.1 app on a headless VPS draws an opaque-color
+	// fullscreen window because:
+	//   - LIBGL_ALWAYS_SOFTWARE=1 makes Mesa pick LLVMpipe instead of
+	//     trying (and failing) DRI2/DRI3 against a non-existent GPU.
+	//   - WEBKIT_DISABLE_DMABUF_RENDERER=1 turns off WebKit 2.42+'s
+	//     dmabuf-backed renderer, which assumes a real DRM device.
+	//   - WEBKIT_DISABLE_COMPOSITING_MODE=1 forces WebKit to draw via
+	//     plain Cairo paths instead of trying to spin up an accelerated
+	//     compositor that has nothing to composite onto.
+	//   - GDK_BACKEND=x11 keeps GTK off the Wayland code path, which
+	//     would otherwise probe XDG_RUNTIME_DIR for compositors.
 	args := []string{
 		"-n",
 		"systemd-run",
 		"--collect", "--quiet", "--no-block",
 		"--unit=" + unit,
+		"--setenv=LIBGL_ALWAYS_SOFTWARE=1",
+		"--setenv=WEBKIT_DISABLE_DMABUF_RENDERER=1",
+		"--setenv=WEBKIT_DISABLE_COMPOSITING_MODE=1",
+		"--setenv=GDK_BACKEND=x11",
 		"--",
 		"xpra", "start", fmt.Sprintf(":%d", display),
 		fmt.Sprintf("--bind-tcp=127.0.0.1:%d", port),
