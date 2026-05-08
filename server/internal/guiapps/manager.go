@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -19,6 +20,12 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// readyTimeout is how long Launch waits for xpra to bind its TCP port
+// before treating the session as a startup failure. Tauri 2 + WebKit2GTK
+// cold-starts in 2-4 s on a small VPS; 15 s gives slack for the first
+// time WebKit caches are warmed.
+const readyTimeout = 15 * time.Second
 
 // Session is one running xpra-backed GUI app instance.
 type Session struct {
@@ -109,6 +116,19 @@ func (m *Manager) Launch(ctx context.Context, command, actor string) (*Session, 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("systemd-run xpra: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	// systemd-run --no-block returns the moment the unit is queued, but
+	// xpra still has to spin up Xvfb, init WebKit, and bind the TCP
+	// port. If we returned now the client would race straight into a
+	// "connection refused" 502 from the reverse proxy. Block here
+	// until xpra is actually accepting connections.
+	if err := waitForPort(ctx, port, readyTimeout); err != nil {
+		// Tear down whatever fragments of the unit are sitting around
+		// so the next Launch attempt doesn't collide on the same name.
+		_ = exec.Command("sudo", "-n", "systemctl", "stop", unit).Run()
+		_ = exec.Command("sudo", "-n", "systemctl", "reset-failed", unit).Run()
+		return nil, fmt.Errorf("xpra not ready after %s: %w", readyTimeout, err)
 	}
 
 	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
@@ -214,6 +234,35 @@ func newReverseProxy(target *url.URL, id string) *httputil.ReverseProxy {
 		req.Host = target.Host
 	}
 	return rp
+}
+
+// waitForPort polls 127.0.0.1:port until either a TCP dial succeeds
+// (xpra is ready) or the deadline expires. We use a short per-attempt
+// dial timeout so the loop reacts quickly while xpra is still starting.
+func waitForPort(ctx context.Context, port int, timeout time.Duration) error {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		dCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		var d net.Dialer
+		conn, err := d.DialContext(dCtx, "tcp", addr)
+		cancel()
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("timeout")
+	}
+	return lastErr
 }
 
 // newSessionID returns 16 hex chars (8 bytes of randomness). Short
